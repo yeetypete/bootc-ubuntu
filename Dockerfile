@@ -77,6 +77,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     systemd \
     systemd-boot \
     systemd-cryptsetup \
+    systemd-repart \
     systemd-resolved \
     systemd-timesyncd \
     tpm2-tools \
