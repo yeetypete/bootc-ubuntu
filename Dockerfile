@@ -59,6 +59,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     binutils \
     bubblewrap \
     composefs \
+    cryptsetup-bin \
+    dmsetup \
     dosfstools \
     dracut \
     e2fsprogs \
@@ -74,8 +76,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     skopeo \
     systemd \
     systemd-boot \
+    systemd-cryptsetup \
     systemd-resolved \
     systemd-timesyncd \
+    tpm2-tools \
     ubuntu-minimal \
     zstd
 
