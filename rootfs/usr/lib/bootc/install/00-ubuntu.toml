@@ -1,8 +1,5 @@
 [install]
-# Ubuntu does not package bootupd, so systemd-boot handles the ESP.
 bootloader = "systemd"
 
 [install.filesystem.root]
-# ext4 supports fs-verity, which the composefs backend uses to validate the
-# deployed root. xfs would require --allow-missing-verity.
 type = "ext4"

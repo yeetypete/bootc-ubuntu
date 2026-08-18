@@ -1,7 +1,5 @@
 # hadolint global ignore=DL3008
 
-# bootc is not packaged in Ubuntu, so build it from a release tag. Everything
-# else it needs (ostree, composefs, dracut, systemd-boot) comes from the archive.
 FROM ubuntu:26.04 AS bootc-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -48,13 +46,11 @@ Pin-Priority: -1
 EOF
 
 # Staged before the kernel so /usr/lib/kernel/install.conf is in place and
-# kernel-install defers to bootc instead of generating an initramfs itself. The
-# rest of rootfs/ lands after apt: its tmpfiles.d rules retarget /var/lib/dpkg
-# and /etc/resolv.conf, which breaks dpkg if applied by a postinst mid-install.
+# kernel-install defers to bootc instead of generating an initramfs itself.
 COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
 
-# The stock signed kernel is used as-is: it already carries FS_VERITY=y and
-# EROFS_FS=m, which the composefs backend needs at boot.
+# The stock kernel already carries FS_VERITY=y and EROFS_FS=m, which the composefs
+# backend needs at boot.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
@@ -79,6 +75,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ubuntu-minimal \
     zstd
 
+# Must land after apt: these tmpfiles.d rules retarget /var/lib/dpkg, which
+# destroys the dpkg database if a postinst applies them mid-install.
 COPY rootfs/ /
 
 # Installed after the packages so it links against the archive's libostree, and
@@ -93,9 +91,8 @@ RUN kver="$(basename "$(echo /usr/lib/modules/*)")"; \
       --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img"; \
     cp "/boot/vmlinuz-${kver}" "/usr/lib/modules/${kver}/vmlinuz"
 
-# The base image ships an 'ubuntu' user; a base image should carry no login
-# accounts, so drop it and let a derived image create the primary user. Its home
-# directory goes away with /home in the layout step below.
+# Drop the 'ubuntu' user shipped by the base image. A derived image creates the
+# primary user. Its home directory goes away with /home in the layout step below.
 RUN userdel ubuntu
 
 # Make the filesystem layout ostree-compatible. Remove the placeholder fstab too,
