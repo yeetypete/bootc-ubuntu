@@ -15,9 +15,6 @@ oci_archive := "image.oci"
 # Name and size of the disk image produced by `just disk`.
 disk_name := "ubuntu-bootc"
 disk_size := "20G"
-# Memory for the VM that runs the install. /tmp there is half of this, and the
-# install needs room to unpack the image.
-install_memory := "8192"
 
 # List available recipes.
 default:
@@ -42,12 +39,15 @@ disk: load
     #!/usr/bin/env bash
     set -euo pipefail
     truncate -s {{ disk_size }} {{ disk_name }}.img
-    # /var/tmp is a 1.6G tmpfs in the VM, too small to unpack into.
-    install="mount --bind /tmp /var/tmp && \
+    # In the VM /var is a tmpfs carved out of /run which is too small to
+    # unpack the image into. Give /var/tmp its own tmpfs backed by the swap
+    # device. This is what bcvk does in its own to-disk.
+    install="mount -t tmpfs -o size={{ disk_size }} tmpfs /var/tmp && \
     /usr/lib/ubuntu-bootc/install-encrypted.py \
-    --karg console=ttyS0,115200 --karg console=tty0 /dev/vda \
+    --karg console=ttyS0,115200 --karg console=tty0 \
+    /dev/disk/by-id/virtio-target \
     oci-archive:/run/virtiofs-mnt-repo/{{ oci_archive }}:{{ tag }} docker.io/{{ image }}:{{ tag }}"
-    bcvk ephemeral run-ssh --rm --memory {{ install_memory }} \
+    bcvk ephemeral run-ssh --rm --add-swap {{ disk_size }} \
         --mount-disk-file "$PWD/{{ disk_name }}.img:target" \
         --bind "$PWD:repo" \
         docker.io/{{ image }}:{{ tag }} \
