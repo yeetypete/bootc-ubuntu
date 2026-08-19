@@ -1,4 +1,4 @@
-# hadolint global ignore=DL3008
+# hadolint global ignore=DL3008,DL3059
 
 FROM ubuntu:26.04 AS bootc-builder
 
@@ -128,6 +128,14 @@ RUN systemctl enable \
 # only applied at first provisioning). A tmpfiles.d symlink restores /var/lib/dpkg.
 RUN mkdir -p /usr/lib/sysimage && \
     mv /var/lib/dpkg /usr/lib/sysimage/dpkg
+
+# Make systemd generate a real machine ID on first boot. Otherwise every installed
+# machine shares the same one.
+RUN : > /etc/machine-id
+
+# Let sshd-keygen generate unique per-machine host keys on first boot. Delete the
+# keys openssh-server's postinstall hook generates at build time.
+RUN rm -f /etc/ssh/ssh_host_*
 
 # bootc expects /var empty (populated at boot via tmpfiles.d) and /run, /tmp clean.
 RUN rm -rf /run/* /tmp/* /var/log/* && \
