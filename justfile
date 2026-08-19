@@ -38,7 +38,6 @@ disk:
     truncate -s {{ disk_size }} {{ disk_name }}.img
     docker run \
         --rm --privileged \
-        --security-opt label=disable \
         -v /dev:/dev \
         -v "$PWD:/output" \
         {{ image }}:{{ tag }} \
@@ -52,14 +51,14 @@ disk:
 
 # Boot the disk image from `just disk` in qemu, with the console on this terminal.
 boot:
-    cp /usr/share/OVMF/OVMF_VARS_4M.fd {{ disk_name }}-vars.fd
     qemu-system-x86_64 \
-        -enable-kvm -m 4096 -smp 2 -cpu host -machine q35 \
+        -enable-kvm \
+        -m 2048 \
         -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-        -drive if=pflash,format=raw,unit=1,file={{ disk_name }}-vars.fd \
+        -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
         -drive file={{ disk_name }}.img,format=raw,if=virtio \
         -nographic
 
 # Remove the generated OCI archive and disk image.
 clean:
-    rm -rf {{ oci_archive }} {{ disk_name }}.img {{ disk_name }}-vars.fd
+    rm -rf {{ oci_archive }} {{ disk_name }}.img
