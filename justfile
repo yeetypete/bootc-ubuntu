@@ -27,7 +27,7 @@ build *args:
 
 # Load the built image into podman storage, which is where bcvk reads from.
 load:
-    podman pull docker-daemon:{{ image }}:{{ tag }}
+    podman pull oci-archive:{{ oci_archive }}:{{ tag }}
 
 # Boot the image as a throwaway VM and open a shell in it. The VM is discarded on exit.
 vm: load
