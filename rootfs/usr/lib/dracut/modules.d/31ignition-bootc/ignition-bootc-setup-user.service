@@ -1,0 +1,19 @@
+[Unit]
+Description=Stage the per-machine Ignition config from the ESP
+ConditionPathExists=/etc/initrd-release
+ConditionKernelCommandLine=ignition.firstboot
+DefaultDependencies=false
+Before=ignition-complete.target
+
+# Must land before Ignition looks for a user config.
+Before=ignition-fetch-offline.service
+After=systemd-udevd.service
+Requires=systemd-udevd.service
+
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ignition-bootc-setup-user

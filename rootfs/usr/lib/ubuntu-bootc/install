@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Install a bootc image onto a disk laid out by an Ignition config.
+#
+# The config is the only per-machine input. Ignition's disks stage runs here,
+# from the installer, rather than on the target's first boot: the OS is written
+# to the root filesystem during install, and Ignition cannot re-create the
+# filesystem it is standing on without saving and restoring the deployment
+# around the wipe (Fedora CoreOS does that in its ignition-ostree transposefs
+# units, which are not part of Ignition itself). Running the stage here gets
+# the same declarative layout - partitions, LUKS, filesystems - with none of
+# that machinery.
+#
+# The same config is then copied to the ESP, where the initramfs picks it up on
+# first boot to apply everything else in it: users, ssh keys, files, units.
+#
+# Run it from the image itself:
+#
+#     podman run --rm -it --privileged --pid=host --ipc=host \
+#       -v /dev:/dev -v /run/udev:/run/udev:ro -v $PWD:/mnt \
+#       IMAGE /usr/lib/ubuntu-bootc/install /mnt/machine.ign /dev/nvme0n1 IMGREF
+set -euo pipefail
+
+# Discoverable Partitions Specification type GUID, as written by the config.
+ESP_TYPE=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+
+# Configs refer to the install target by this stable name rather than to
+# /dev/vda or /dev/nvme0n1, so one config works on any machine. Fedora CoreOS
+# uses /dev/disk/by-id/coreos-boot-disk for the same reason. It has to come
+# from a udev rule rather than a plain symlink: Ignition waits on the systemd
+# .device unit for the path in the config, and only udev creates those.
+TARGET_ALIAS_NAME=ubuntu-bootc-target
+TARGET_ALIAS=/dev/disk/by-id/$TARGET_ALIAS_NAME
+TARGET_ALIAS_RULE=/run/udev/rules.d/99-ubuntu-bootc-target.rules
+
+# systemd's 99-systemd.rules marks a crypto device with no filesystem on it as
+# SYSTEMD_READY=0, so no .device unit ever appears and Ignition times out
+# waiting for the volume it just created. Ignition ships an override for that,
+# but its dracut module only installs it into the initramfs.
+IGNITION_MODULE=/usr/lib/dracut/modules.d/30ignition
+CRYPT_RULE_NAME=99-xx-ignition-systemd-cryptsetup.rules
+CRYPT_RULE=/run/udev/rules.d/$CRYPT_RULE_NAME
+
+# The label the config is expected to give the root filesystem.
+ROOT_LABEL=root
+
+# bootc unpacks the source image here, and containers/image hardcodes the path
+# rather than honouring TMPDIR.
+SCRATCH=/var/tmp
+SCRATCH_NEEDED=$((3 * 1024 * 1024))  # KiB
+
+usage() {
+    cat >&2 <<EOF
+Usage: ${0##*/} [--karg KARG]... CONFIG DEVICE SOURCE_IMGREF [TARGET_IMGREF]
+
+  CONFIG          Ignition config (JSON) describing this machine.
+  DEVICE          Disk to install to. Every partition on it is destroyed.
+  SOURCE_IMGREF   Image to install, in containers-transports(5) form.
+  TARGET_IMGREF   Registry reference the installed system updates from.
+
+  --karg KARG     Extra kernel argument, repeatable.
+EOF
+    exit 1
+}
+
+kargs=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --karg) kargs+=("--karg" "$2"); shift 2 ;;
+        --karg=*) kargs+=("--karg" "${1#*=}"); shift ;;
+        -h|--help) usage ;;
+        --) shift; break ;;
+        -*) echo "unknown option $1" >&2; usage ;;
+        *) break ;;
+    esac
+done
+[[ $# -ge 3 && $# -le 4 ]] || usage
+
+config=$1
+device=$2
+source_imgref=$3
+target_imgref=${4:-}
+
+[[ $EUID -eq 0 ]] || { echo "must run as root" >&2; exit 1; }
+[[ -f $config ]] || { echo "$config: no such file" >&2; exit 1; }
+[[ -b $device ]] || { echo "$device is not a block device" >&2; exit 1; }
+
+free=$(df --output=avail -k "$SCRATCH" | tail -1)
+if (( free < SCRATCH_NEEDED )); then
+    echo "$SCRATCH has $((free / 1024))M free, the install needs about" \
+         "$((SCRATCH_NEEDED / 1024))M there. Mount more space and retry." >&2
+    exit 1
+fi
+
+ignition-validate "$config"
+
+workdir=$(mktemp -d)
+target=$workdir/target
+mkdir -p "$target"
+cleanup() {
+    umount --recursive "$target" 2>/dev/null || true
+    rm -f "$TARGET_ALIAS_RULE" "$CRYPT_RULE"
+    udevadm control --reload 2>/dev/null || true
+    rm -rf "$workdir"
+}
+trap cleanup EXIT
+
+# udev matches on the kernel name, so resolve /dev/disk/by-*/... first.
+kernel_name=$(readlink -f "$device")
+kernel_name=${kernel_name##*/}
+
+mkdir -p "${TARGET_ALIAS_RULE%/*}"
+cp "$IGNITION_MODULE/$CRYPT_RULE_NAME" "$CRYPT_RULE"
+cat > "$TARGET_ALIAS_RULE" <<EOF
+ACTION!="remove", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="$kernel_name", SYMLINK+="disk/by-id/$TARGET_ALIAS_NAME"
+EOF
+udevadm control --reload
+udevadm trigger --settle --subsystem-match=block --sysname-match="$kernel_name"
+[[ -e $TARGET_ALIAS ]] || { echo "could not alias $device to $TARGET_ALIAS" >&2; exit 1; }
+
+# Ignition looks for user.ign in its system config directory, which is baked in
+# at build time but overridable by environment.
+mkdir -p "$workdir/config"
+cp "$config" "$workdir/config/user.ign"
+export IGNITION_SYSTEM_CONFIG_DIR="$workdir/config"
+
+# fetch-offline populates the config cache the later stages read. The platform
+# is metal because the config comes off local storage, not a cloud provider.
+echo "Applying storage from $config to $device"
+ignition --platform=metal --stage=fetch-offline --root="$workdir/sysroot" --log-to-stdout
+ignition --platform=metal --stage=disks --root="$workdir/sysroot" --log-to-stdout
+udevadm settle
+
+root=/dev/disk/by-label/$ROOT_LABEL
+[[ -e $root ]] || {
+    echo "no filesystem labelled '$ROOT_LABEL' after the disks stage;" \
+         "the config must label the root filesystem '$ROOT_LABEL'" >&2
+    exit 1
+}
+
+# An encrypted root reaches us as a device-mapper node. bootc is handed the
+# already-open mapping and cannot tell the root is encrypted, so it never adds
+# an unlock argument of its own.
+resolved=$(readlink -f "$root")
+if [[ $resolved == /dev/dm-* ]]; then
+    slaves=("/sys/class/block/${resolved##*/}/slaves"/*)
+    backing=${slaves[0]##*/}
+    luks_uuid=$(cryptsetup luksUUID "/dev/$backing")
+    kargs+=("--karg" "rd.luks.uuid=$luks_uuid")
+    echo "Encrypted root on /dev/$backing (LUKS UUID $luks_uuid)"
+fi
+
+mount "$root" "$target"
+
+extra=()
+if [[ -n $target_imgref ]]; then
+    extra+=("--target-imgref" "$target_imgref")
+elif [[ $source_imgref != docker://* && $source_imgref != registry:* ]]; then
+    echo "Warning: no target_imgref and source_imgref is not a registry" \
+         "reference, so the installed system will have no usable update" \
+         "source." >&2
+fi
+
+echo "Installing $source_imgref"
+bootc install to-filesystem \
+    --composefs-backend \
+    --karg ignition.firstboot \
+    --karg ignition.platform.id=metal \
+    "${kargs[@]}" \
+    --source-imgref "$source_imgref" \
+    --skip-fetch-check \
+    "${extra[@]}" \
+    "$target"
+
+umount --recursive "$target"
+
+# Hand the config to the installed system, minus the storage layout: that has
+# been applied above, and re-applying it is neither possible nor wanted. The
+# files stage resolves the devices named under storage through aliases that
+# only the disks stage creates, so leaving the section in fails the boot; and
+# storage.luks holds the passphrase, which has no business sitting in clear
+# text on an unencrypted ESP for the life of the machine.
+#
+# The initramfs stages what is left from here on first boot; see the
+# ignition-bootc dracut module.
+esp=$(lsblk --noheadings --list --output PATH,PARTTYPE "$device" |
+      awk -v t="$ESP_TYPE" 'tolower($2) == t { print $1; exit }')
+[[ -n $esp ]] || { echo "no ESP on $device" >&2; exit 1; }
+mount "$esp" "$target"
+mkdir -p "$target/ignition"
+python3 - "$config" "$target/ignition/config.ign" <<'PYTHON'
+import json
+import sys
+
+src, dest = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    config = json.load(f)
+
+storage = config.get("storage", {})
+for section in ("disks", "luks", "filesystems", "raid"):
+    storage.pop(section, None)
+if not storage:
+    config.pop("storage", None)
+
+with open(dest, "w") as f:
+    json.dump(config, f, indent=2)
+PYTHON
+chmod 0600 "$target/ignition/config.ign"
+umount "$target"
+
+echo
+echo "Installed. ESP $esp, root $resolved."
+echo "First boot applies $config; it is renamed to config.ign.applied once it has."

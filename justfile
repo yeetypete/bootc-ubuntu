@@ -16,6 +16,9 @@ oci_archive := "image.oci"
 disk_name := "ubuntu-bootc"
 # Scratch space the install VM gets for unpacking the image.
 scratch_size := "8G"
+# Per-machine Ignition config `disk` installs from: disk layout, encryption,
+# users, ssh keys. Everything machine-specific lives here, not in the image.
+default_config := "examples/machine.ign"
 
 # List available recipes.
 default:
@@ -34,9 +37,9 @@ load:
 vm: load
     bcvk ephemeral run-ssh docker.io/{{ image }}:{{ tag }}
 
-# Install the image to an encrypted raw disk image that can be booted or written
-# to a device. Prompts for a passphrase. The install runs in a VM.
-disk: load
+# Install the image to a raw disk image laid out by an Ignition config, which
+# can then be booted or written to a device. The install runs in a VM.
+disk config=default_config: load
     #!/usr/bin/env bash
     set -euo pipefail
     # bcvk creates the image when it is missing, so removing it clears the
@@ -46,8 +49,9 @@ disk: load
     # unpack the image into. Give /var/tmp its own tmpfs backed by the swap
     # device. This is what bcvk does in its own to-disk.
     install="mount -t tmpfs -o size={{ scratch_size }} tmpfs /var/tmp && \
-    /usr/lib/ubuntu-bootc/install-encrypted.py \
+    /usr/lib/ubuntu-bootc/install \
     --karg console=ttyS0,115200 --karg console=tty0 \
+    /run/virtiofs-mnt-repo/{{ config }} \
     /dev/disk/by-id/virtio-target \
     oci-archive:/run/virtiofs-mnt-repo/{{ oci_archive }}:{{ tag }} docker.io/{{ image }}:{{ tag }}"
     bcvk ephemeral run-ssh --rm --add-swap {{ scratch_size }} \

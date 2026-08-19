@@ -1,0 +1,56 @@
+{
+  "ignition": { "version": "3.5.0" },
+  "storage": {
+    "disks": [
+      {
+        "device": "/dev/disk/by-id/ubuntu-bootc-target",
+        "wipeTable": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "sizeMiB": 1024,
+            "typeGuid": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+          },
+          {
+            "label": "root",
+            "typeGuid": "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+          }
+        ]
+      }
+    ],
+    "luks": [
+      {
+        "name": "root",
+        "device": "/dev/disk/by-partlabel/root",
+        "wipeVolume": true,
+        "keyFile": { "source": "data:,testluks" }
+      }
+    ],
+    "filesystems": [
+      {
+        "device": "/dev/disk/by-partlabel/esp",
+        "format": "vfat",
+        "label": "EFI-SYSTEM",
+        "wipeFilesystem": true
+      },
+      {
+        "device": "/dev/mapper/root",
+        "format": "ext4",
+        "label": "root",
+        "options": ["-O", "verity"],
+        "wipeFilesystem": true
+      }
+    ]
+  },
+  "passwd": {
+    "users": [
+      {
+        "name": "tester",
+        "passwordHash": "$6$pOlbGYDkY0t00Bvj$dUeDCMLdA.xgL6GfstPaop1fdBGZfgrz/kHTGBQNu.qJEVsoCFmB3OYW58G27GnG/7sYDXgfRfHuL8d4BWey6/",
+        "shell": "/bin/bash",
+        "groups": ["sudo"],
+        "sshAuthorizedKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC4z/z5PACRRF1xPVgq9Wk6LWAnZ5AkxAm46qyqHJRJq ignition-test"]
+      }
+    ]
+  }
+}

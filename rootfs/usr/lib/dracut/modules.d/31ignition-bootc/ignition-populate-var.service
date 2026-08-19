@@ -1,0 +1,21 @@
+[Unit]
+Description=Populate /var for Ignition
+Documentation=https://github.com/bootc-dev/bootc
+ConditionPathExists=/etc/initrd-release
+DefaultDependencies=false
+Before=ignition-complete.target
+
+# Ignition creates a user's home directory as that user (see as_user.MkdirAll),
+# so /var/home must exist and the deployment's /var must be mounted first.
+# bootc bind-mounts /var from the deployment state dir during
+# initrd-root-fs.target, which ignition-mount.service already orders after.
+After=ignition-mount.service
+Before=ignition-files.service
+
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemd-tmpfiles --create --root=/sysroot --prefix=/var
