@@ -100,9 +100,11 @@ RUN kver="$(basename "$(echo /usr/lib/modules/*)")"; \
       --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img"; \
     cp "/boot/vmlinuz-${kver}" "/usr/lib/modules/${kver}/vmlinuz"
 
-# Drop the 'ubuntu' user shipped by the base image. A derived image creates the
-# primary user. Its home directory goes away with /home in the layout step below.
-RUN userdel ubuntu
+# Drop the base image's 'ubuntu' user, whose home goes with /home in the layout
+# step below. systemd-sysusers creates the account at boot from a credential
+# and pam_mkhomedir creates its home directory.
+RUN userdel ubuntu && \
+    pam-auth-update --enable mkhomedir
 
 # Make the filesystem layout ostree-compatible. Remove the placeholder fstab too,
 # or bootc's /etc overlay makes libmount warn "fstab has been modified" at boot.
