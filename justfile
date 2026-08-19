@@ -15,6 +15,9 @@ oci_archive := "image.oci"
 # Name and size of the disk image produced by `just disk`.
 disk_name := "ubuntu-bootc"
 disk_size := "20G"
+# Memory for the VM that runs the install. /tmp there is half of this, and the
+# install needs room to unpack the image.
+install_memory := "8192"
 
 # List available recipes.
 default:
@@ -33,21 +36,22 @@ load:
 vm: load
     bcvk ephemeral run-ssh docker.io/{{ image }}:{{ tag }}
 
-# Install the image to a raw disk image that can be booted or written to a device.
-disk:
+# Install the image to an encrypted raw disk image that can be booted or written
+# to a device. Prompts for a passphrase. The install runs in a VM.
+disk: load
+    #!/usr/bin/env bash
+    set -euo pipefail
     truncate -s {{ disk_size }} {{ disk_name }}.img
-    docker run \
-        --rm --privileged \
-        -v /dev:/dev \
-        -v "$PWD:/output" \
-        {{ image }}:{{ tag }} \
-        bootc install to-disk \
-            --source-imgref oci-archive:/output/{{ oci_archive }}:{{ tag }} \
-            --target-imgref docker.io/{{ image }}:{{ tag }} \
-            --composefs-backend \
-            --karg console=ttyS0,115200 \
-            --karg console=tty0 \
-            --via-loopback /output/{{ disk_name }}.img
+    # /var/tmp is a 1.6G tmpfs in the VM, too small to unpack into.
+    install="mount --bind /tmp /var/tmp && \
+    /usr/lib/ubuntu-bootc/install-encrypted.py \
+    --karg console=ttyS0,115200 --karg console=tty0 /dev/vda \
+    oci-archive:/run/virtiofs-mnt-repo/{{ oci_archive }}:{{ tag }} docker.io/{{ image }}:{{ tag }}"
+    bcvk ephemeral run-ssh --rm --memory {{ install_memory }} \
+        --mount-disk-file "$PWD/{{ disk_name }}.img:target" \
+        --bind "$PWD:repo" \
+        docker.io/{{ image }}:{{ tag }} \
+        -t "$install"
 
 # Boot the disk image from `just disk` in qemu, with the console on this terminal.
 boot:
