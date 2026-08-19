@@ -53,7 +53,10 @@ disk:
 boot:
     qemu-system-x86_64 \
         -enable-kvm \
-        -m 2048 \
+        -machine q35 \
+        -cpu host \
+        -smp 2 \
+        -m 4096 \
         -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
         -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
         -drive file={{ disk_name }}.img,format=raw,if=virtio \
