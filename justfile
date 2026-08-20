@@ -16,6 +16,10 @@ oci_archive := "image.oci"
 disk_name := "ubuntu-bootc"
 # Scratch space the install VM gets for unpacking the image.
 scratch_size := "8G"
+# Account provisioned into a test VM, recreated as the base image had it.
+user := "ubuntu"
+# Groups the base image's "ubuntu" user belonged to.
+user_groups := "adm dialout cdrom floppy sudo audio dip video plugdev"
 
 # List available recipes.
 default:
@@ -30,9 +34,40 @@ build *args:
 load:
     podman pull oci-archive:{{ oci_archive }}:{{ tag }}
 
+# Print the credentials that provision NAME, one name:base64 pair per line. The
+# account lives only in what is passed in at boot, not the image.
+[private]
+credentials name=user:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    read -rsp "Password for {{ name }}: " password < /dev/tty > /dev/tty
+    echo > /dev/tty
+    [[ -n "$password" ]] || { echo "Password must not be empty." >&2; exit 1; }
+    # The UID is spelled out because sysusers allocates from the system range
+    # otherwise, and a login below UID_MIN is hidden from the login screen.
+    account=$({
+        printf 'u %s 1000 "Ubuntu" /var/home/%s /bin/bash\n' {{ name }} {{ name }}
+        for group in {{ user_groups }}; do
+            printf 'm %s %s\n' {{ name }} "$group"
+        done
+    } | base64 -w0)
+    hashed=$(printf '%s' "$(openssl passwd -6 "$password")" | base64 -w0)
+    printf 'sysusers.extra:%s\n' "$account"
+    printf 'passwd.hashed-password.{{ name }}:%s\n' "$hashed"
+
 # Boot the image as a throwaway VM and open a shell in it. The VM is discarded on exit.
-vm: load
-    bcvk ephemeral run-ssh docker.io/{{ image }}:{{ tag }}
+# Pass user=<name> to login as a non-root provisioned user.
+vm user="": load
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kargs=()
+    if [[ -n "{{ user }}" ]]; then
+        pairs=$(just credentials {{ user }})
+        while read -r cred; do
+            kargs+=(--karg "systemd.set_credential_binary=$cred")
+        done <<< "$pairs"
+    fi
+    bcvk ephemeral run-ssh "${kargs[@]}" docker.io/{{ image }}:{{ tag }}
 
 # Install the image to an encrypted raw disk image that can be booted or written
 # to a device. Prompts for a passphrase. The install runs in a VM.
@@ -57,8 +92,19 @@ disk: load
         -t "$install"
 
 # Boot the disk image from `just disk` in qemu, with the console on this terminal.
-boot:
+boot user=user:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    creds=()
+    if [[ -n "{{ user }}" ]]; then
+        pairs=$(just credentials {{ user }})
+        # SMBIOS spells the pair name=value rather than name:value.
+        while read -r cred; do
+            creds+=(-smbios "type=11,value=io.systemd.credential.binary:${cred/:/=}")
+        done <<< "$pairs"
+    fi
     qemu-system-x86_64 \
+        "${creds[@]}" \
         -enable-kvm \
         -machine q35 \
         -cpu host \
