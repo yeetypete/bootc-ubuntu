@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     make bin install DESTDIR="${DESTDIR}"
 
 
-FROM ubuntu:26.04
+FROM ubuntu:26.04 AS rootfs
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -108,9 +108,11 @@ RUN userdel ubuntu && \
 
 # Make the filesystem layout ostree-compatible. Remove the placeholder fstab too,
 # or bootc's /etc overlay makes libmount warn "fstab has been modified" at boot.
+# Create /boot/EFI/Linux here because the composefs digest sealed into the UKI
+# excludes the UKI but not its parent directory.
 # hadolint ignore=SC2114
 RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
-    mkdir -p /boot /sysroot /var && \
+    mkdir -p /boot/EFI/Linux /sysroot /var && \
     ln -s /var/home /home && \
     ln -s /var/roothome /root && \
     ln -s /var/srv /srv && \
@@ -152,4 +154,36 @@ RUN rm -rf /run/* /tmp/* /var/log/* && \
 
 LABEL containers.bootc=1
 
+# Linting happens here rather than on the finished image because the stages
+# below move the kernel out of the rootfs and into a UKI.
 RUN bootc container lint --fatal-warnings
+
+
+# Move vmlinuz and initramfs.img out of /usr/lib/modules, so that the image does
+# not carry a second copy of what the UKI embeds.
+FROM rootfs AS split
+
+RUN mkdir /kernel && \
+    bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+
+FROM bootc-builder AS uki
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    systemd-boot-efi \
+    systemd-ukify
+
+RUN --mount=type=bind,from=split,target=/target \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel \
+    kver="$(basename "$(echo /kernel/*)")"; \
+    mkdir -p /uki; \
+    "${DESTDIR}/usr/bin/bootc" container ukify \
+      --rootfs /target --kernel-dir "/kernel/${kver}" \
+      -- --output "/uki/${kver}.efi"
+
+
+FROM split AS image
+
+COPY --from=uki /uki/*.efi /boot/EFI/Linux/

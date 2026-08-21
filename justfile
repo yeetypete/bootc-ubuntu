@@ -2,16 +2,19 @@
 
 # Image repository for the built image.
 image := "yeetypete/ubuntu-bootc"
-# Version for image labels and tag suffix (docker bake strips a leading "v").
-version := "v0.0.0"
+# Version for image labels and the tag suffix, without its leading "v".
+version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
-# Whether `build` also pushes the image to the registry (set push=true on releases).
-push := "false"
 # Tag the image is built with.
 tag := "26.04"
 
 oci_archive := "image.oci"
+# Registry reference of the built image, as the installed system refers to it.
+imgref := "docker.io/" + image + ":" + tag
+# Firmware for the qemu recipes. Booting this image needs UEFI.
+ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+    -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
 # Name of the disk image produced by `just disk`. bcvk sizes it for us.
 disk_name := "ubuntu-bootc"
 # Scratch space the install VM gets for unpacking the image.
@@ -27,12 +30,21 @@ default:
 
 # Build the bootc container image.
 build *args:
-    IMAGE={{ image }} VERSION={{ version }} REVISION={{ revision }} PUSH={{ push }} \
-        docker buildx bake ubuntu-bootc {{ args }}
+    podman build --target image \
+        --label org.opencontainers.image.version={{ version }} \
+        --label org.opencontainers.image.revision={{ revision }} \
+        --tag {{ imgref }} \
+        --tag {{ imgref }}-{{ version }} \
+        {{ args }} .
 
-# Load the built image into podman storage, which is where bcvk reads from.
-load:
-    podman pull oci-archive:{{ oci_archive }}:{{ tag }}
+# Export the bootc container image as an OCI archive.
+archive: build
+    podman push --quiet {{ imgref }} oci-archive:{{ oci_archive }}:{{ tag }}
+
+# Push the image to its registry.
+push: build
+    podman push {{ imgref }}
+    podman push {{ imgref }}-{{ version }}
 
 # Print the credentials that provision NAME, one name:base64 pair per line. The
 # account lives only in what is passed in at boot, not the image.
@@ -57,7 +69,7 @@ credentials name=user:
 
 # Boot the image as a throwaway VM and open a shell in it. The VM is discarded on exit.
 # Pass user=<name> to login as a non-root provisioned user.
-vm user="": load
+vm user="": build
     #!/usr/bin/env bash
     set -euo pipefail
     kargs=()
@@ -67,11 +79,11 @@ vm user="": load
             kargs+=(--karg "systemd.set_credential_binary=$cred")
         done <<< "$pairs"
     fi
-    bcvk ephemeral run-ssh "${kargs[@]}" docker.io/{{ image }}:{{ tag }}
+    bcvk ephemeral run-ssh "${kargs[@]}" {{ imgref }}
 
 # Install the image to an encrypted raw disk image that can be booted or written
 # to a device. Prompts for a passphrase. The install runs in a VM.
-disk: load
+disk: archive
     #!/usr/bin/env bash
     set -euo pipefail
     # bcvk creates the image when it is missing, so removing it clears the
@@ -81,14 +93,13 @@ disk: load
     # unpack the image into. Give /var/tmp its own tmpfs backed by the swap
     # device. This is what bcvk does in its own to-disk.
     install="mount -t tmpfs -o size={{ scratch_size }} tmpfs /var/tmp && \
-    /usr/lib/ubuntu-bootc/install-encrypted.py \
-    --karg console=ttyS0,115200 --karg console=tty0 \
+    ubuntu-bootc-install \
     /dev/disk/by-id/virtio-target \
-    oci-archive:/run/virtiofs-mnt-repo/{{ oci_archive }}:{{ tag }} docker.io/{{ image }}:{{ tag }}"
+    oci-archive:/run/virtiofs-mnt-repo/{{ oci_archive }}:{{ tag }} {{ imgref }}"
     bcvk ephemeral run-ssh --rm --add-swap {{ scratch_size }} \
         --mount-disk-file "$PWD/{{ disk_name }}.img:target" \
         --bind "$PWD:repo" \
-        docker.io/{{ image }}:{{ tag }} \
+        {{ imgref }} \
         -t "$install"
 
 # Boot the disk image from `just disk` in qemu, with the console on this terminal.
@@ -110,11 +121,11 @@ boot user=user:
         -cpu host \
         -smp 2 \
         -m 4096 \
-        -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-        -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd \
+        {{ ovmf }} \
         -drive file={{ disk_name }}.img,format=raw,if=virtio \
         -nographic
 
-# Remove the generated OCI archive and disk image.
+# Remove the generated OCI archive, disk images and ISO.
 clean:
-    rm -rf {{ oci_archive }} {{ disk_name }}.img
+    rm -rf {{ oci_archive }} {{ disk_name }}.img {{ disk_name }}-target.img \
+        {{ disk_name }}.iso .live

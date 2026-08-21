@@ -78,13 +78,6 @@ def parse_args() -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--karg",
-        action="append",
-        default=[],
-        metavar="KARG",
-        help="Extra kernel argument, repeatable.",
-    )
     parser.add_argument("device", type=Path, help="Disk to install to.")
     parser.add_argument(
         "source_imgref",
@@ -136,13 +129,6 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
     esp = partition_of_type(args.device, ESP_TYPE)
     root = partition_of_type(args.device, ROOT_TYPE)
 
-    luks_uuid = subprocess.run(
-        ["cryptsetup", "luksUUID", root],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
     print(f"Unlocking {root}")
     subprocess.run(
         ["cryptsetup", "luksOpen", root, MAPPING, f"--key-file={keyfile}"],
@@ -167,8 +153,6 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
             "install",
             "to-filesystem",
             "--composefs-backend",
-            f"--karg=rd.luks.uuid={luks_uuid}",
-            *(f"--karg={karg}" for karg in args.karg),
             f"--source-imgref={args.source_imgref}",
             "--skip-fetch-check",
             *extra,
