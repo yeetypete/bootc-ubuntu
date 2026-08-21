@@ -147,6 +147,10 @@ RUN : > /etc/machine-id
 # keys openssh-server's postinstall hook generates at build time.
 RUN rm -f /etc/ssh/ssh_host_*
 
+# Drop the empty /etc/resolv.conf the base image ships, so that systemd's stock
+# tmpfiles rule can symlink it to the resolved stub at boot.
+RUN --network=none rm -f /etc/resolv.conf
+
 # bootc expects /var empty (populated at boot via tmpfiles.d) and /run, /tmp clean.
 RUN rm -rf /run/* /tmp/* /var/log/* && \
     find /var -mindepth 1 -type f -delete && \
