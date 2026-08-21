@@ -165,7 +165,7 @@ RUN bootc container lint --fatal-warnings
 
 
 # Move vmlinuz and initramfs.img out of /usr/lib/modules, so that the image does
-# not carry a second copy of what the UKI embeds.
+# not contain a second copy of what the UKI embeds.
 FROM rootfs AS split
 
 RUN mkdir /kernel && \

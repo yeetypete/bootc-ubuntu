@@ -104,7 +104,7 @@ def resolve_imgrefs(
     live_imgref = LIVE_IMGREF.read_text().strip() if LIVE_IMGREF.exists() else ""
     if not source_imgref:
         if not (LIVE_OCI.exists() and live_imgref):
-            sys.exit("no source image given, and this is not a live ISO carrying one.")
+            sys.exit("no source image given, and this live ISO does not contain one.")
         tag = live_imgref.rsplit(":", 1)[1]
         source_imgref = f"oci:{LIVE_OCI}:{tag}"
     return source_imgref, target_imgref or live_imgref
