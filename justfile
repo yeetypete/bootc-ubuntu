@@ -117,7 +117,7 @@ live-vm target_size="20G":
     set -euo pipefail
     target={{ disk_name }}-target.img
     [[ -f $target ]] || truncate -s {{ target_size }} "$target"
-    qemu-system-x86_64 \
+    exec qemu-system-x86_64 \
         -enable-kvm \
         -machine q35 \
         -cpu host \
@@ -140,7 +140,7 @@ boot user=user:
             creds+=(-smbios "type=11,value=io.systemd.credential.binary:${cred/:/=}")
         done <<< "$pairs"
     fi
-    qemu-system-x86_64 \
+    exec qemu-system-x86_64 \
         "${creds[@]}" \
         -enable-kvm \
         -machine q35 \
@@ -150,6 +150,16 @@ boot user=user:
         {{ ovmf }} \
         -drive file={{ disk_name }}.img,format=raw,if=virtio \
         {{ graphics }}
+
+# List running VMs.
+vm-ps:
+    @pgrep -a -f '[q]emu-system-x86_64 .*{{ disk_name }}' || true
+    @bcvk ephemeral ps || true
+
+# Stop all running VMs.
+vm-kill:
+    -pkill -f '[q]emu-system-x86_64 .*{{ disk_name }}'
+    -bcvk ephemeral rm-all --force
 
 # Remove the generated OCI archive, disk images and ISO.
 clean:
