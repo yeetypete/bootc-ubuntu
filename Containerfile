@@ -226,7 +226,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     squashfs-tools \
     xorriso
 
-COPY --from=image / /rootfs/
+COPY --from=split / /rootfs/
 # Live-only files, which exist on the ISO and never on an installed system.
 COPY live/overlay/ /rootfs/
 COPY --from=live-uki /live.efi /live.efi
