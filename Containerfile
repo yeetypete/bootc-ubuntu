@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     make bin install DESTDIR="${DESTDIR}"
 
 
-FROM ubuntu:26.04 AS rootfs
+FROM ubuntu:26.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -54,9 +54,6 @@ COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
 # backend needs at boot.
 #
 # NOTE: binutils and bubblewrap are required by bcvk VM tests only.
-#
-# gnome-initial-setup creates the machine's first account, in a session gdm
-# starts when it finds none.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
@@ -70,9 +67,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     e2fsprogs \
     efibootmgr \
     fdisk \
-    gdm3 \
-    gnome-initial-setup \
-    gnome-shell \
     less \
     linux-firmware \
     linux-image-generic \
@@ -88,7 +82,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     systemd-resolved \
     systemd-timesyncd \
     tpm2-tools \
-    ubuntu-minimal \
     zstd
 
 # Must land after apt: these tmpfiles.d rules retarget /var/lib/dpkg, which
@@ -100,18 +93,48 @@ COPY rootfs/ /
 COPY --from=bootc-builder /out/usr/ /usr/
 RUN ldconfig
 
+# Drop the base image's 'ubuntu' user, whose home goes away with /home in the
+# rootfs stage. systemd-sysusers creates the account at boot from a credential,
+# and pam_mkhomedir creates its home directory.
+RUN userdel ubuntu && \
+    pam-auth-update --enable mkhomedir
+
+RUN systemctl enable \
+    NetworkManager.service \
+    ssh.service \
+    systemd-resolved.service \
+    systemd-timesyncd.service \
+    tmp.mount && \
+    systemctl disable \
+    apt-daily-upgrade.service \
+    apt-daily-upgrade.timer \
+    apt-daily.service \
+    apt-daily.timer
+
+
+FROM base AS desktop
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    gdm3 \
+    gnome-initial-setup \
+    gnome-shell \
+    ptyxis \
+    ubuntu-minimal \
+    ubuntu-session
+
+RUN systemctl enable gdm.service
+
+
+FROM desktop AS rootfs
+
 # Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
 RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
     depmod "${kver}" && \
     dracut --force --no-hostonly --reproducible --zstd --verbose \
       --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img" && \
     cp "/boot/vmlinuz-${kver}" "/usr/lib/modules/${kver}/vmlinuz"
-
-# Drop the base image's 'ubuntu' user, whose home goes with /home in the layout
-# step below. systemd-sysusers creates the account at boot from a credential
-# and pam_mkhomedir creates its home directory.
-RUN userdel ubuntu && \
-    pam-auth-update --enable mkhomedir
 
 # Make the filesystem layout ostree-compatible. Remove the placeholder fstab too,
 # or bootc's /etc overlay makes libmount warn "fstab has been modified" at boot.
@@ -127,19 +150,6 @@ RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
     ln -s /var/mnt /mnt && \
     ln -s sysroot/ostree /ostree && \
     rm -f /etc/fstab
-
-RUN systemctl enable \
-    NetworkManager.service \
-    gdm.service \
-    ssh.service \
-    systemd-resolved.service \
-    systemd-timesyncd.service \
-    tmp.mount && \
-    systemctl disable \
-    apt-daily-upgrade.service \
-    apt-daily-upgrade.timer \
-    apt-daily.service \
-    apt-daily.timer
 
 # Relocate the dpkg database to /usr so it persists across image updates (/var is
 # only applied at first provisioning). A tmpfiles.d symlink restores /var/lib/dpkg.
