@@ -54,6 +54,9 @@ COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
 # backend needs at boot.
 #
 # NOTE: binutils and bubblewrap are required by bcvk VM tests only.
+#
+# gnome-initial-setup creates the machine's first account, in a session gdm
+# starts when it finds none.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
@@ -67,6 +70,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     e2fsprogs \
     efibootmgr \
     fdisk \
+    gdm3 \
+    gnome-initial-setup \
+    gnome-shell \
     less \
     linux-firmware \
     linux-image-generic \
@@ -124,6 +130,7 @@ RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
 
 RUN systemctl enable \
     NetworkManager.service \
+    gdm.service \
     ssh.service \
     systemd-resolved.service \
     systemd-timesyncd.service \
@@ -205,7 +212,7 @@ RUN mkdir -p /var/tmp /var/roothome && \
     kver="$(basename "$(echo /usr/lib/modules/*)")" && \
     dracut --force --no-hostonly --reproducible --zstd --uefi \
       --add dmsquash-live --omit bootc \
-      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image console=tty0 console=ttyS0,115200" \
+      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image systemd.unit=multi-user.target console=tty0 console=ttyS0,115200" \
       --kver "${kver}" /live.efi
 
 
