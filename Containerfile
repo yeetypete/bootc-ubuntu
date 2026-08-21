@@ -99,6 +99,13 @@ RUN ldconfig
 RUN userdel ubuntu && \
     pam-auth-update --enable mkhomedir
 
+# Workaround: Ubuntu 25.04 and newer load the bwrap-userns-restrict AppArmor
+# profile, which denies all capabilities to children of /usr/bin/bwrap. bcvk runs
+# qemu and virtiofsd there, so its VMs never finish booting. Move the binary off
+# the matched path to avoid the profile.
+RUN mv /usr/bin/bwrap /usr/libexec/bwrap && \
+    ln -s ../libexec/bwrap /usr/bin/bwrap
+
 RUN systemctl enable \
     NetworkManager.service \
     ssh.service \
