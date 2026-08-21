@@ -154,6 +154,11 @@ live *args: oci
         --output type=local,dest=. \
         {{ args }} .
 
+# Build the live ISO and checksum it for distribution.
+[group('iso')]
+dist: live
+    sha256sum {{ iso }} > {{ iso }}.sha256
+
 # Boot the live ISO in qemu against a blank disk.
 [doc('Boot the live ISO against a blank disk, to install onto it.')]
 [group('iso')]
@@ -191,4 +196,4 @@ vm-kill:
 
 # Remove the generated OCI archive, disk images and ISO.
 clean:
-    rm -rf {{ oci_dir }} {{ disk_img }} {{ live_img }} {{ iso }} .live
+    rm -rf {{ oci_dir }} {{ disk_img }} {{ live_img }} {{ iso }} {{ iso }}.sha256 .live
