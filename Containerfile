@@ -39,8 +39,6 @@ FROM ubuntu:26.04 AS rootfs
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-
 # bootc requires dracut, so keep initramfs-tools out.
 COPY <<EOF /etc/apt/preferences.d/no-initramfs-tools
 Package: initramfs-tools*
@@ -97,10 +95,10 @@ COPY --from=bootc-builder /out/usr/ /usr/
 RUN ldconfig
 
 # Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
-RUN kver="$(basename "$(echo /usr/lib/modules/*)")"; \
-    depmod "${kver}"; \
+RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
+    depmod "${kver}" && \
     dracut --force --no-hostonly --reproducible --zstd --verbose \
-      --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img"; \
+      --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img" && \
     cp "/boot/vmlinuz-${kver}" "/usr/lib/modules/${kver}/vmlinuz"
 
 # Drop the base image's 'ubuntu' user, whose home goes with /home in the layout
@@ -180,8 +178,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN --mount=type=bind,from=split,target=/target \
     --mount=type=bind,from=split,source=/kernel,target=/kernel \
-    kver="$(basename "$(echo /kernel/*)")"; \
-    mkdir -p /uki; \
+    kver="$(basename "$(echo /kernel/*)")" && \
+    mkdir -p /uki && \
     "${DESTDIR}/usr/bin/bootc" container ukify \
       --rootfs /target --kernel-dir "/kernel/${kver}" \
       -- --output "/uki/${kver}.efi"
