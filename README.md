@@ -57,20 +57,28 @@ To unlock with the TPM instead of a passphrase, enroll one afterwards with
 ## Testing in a VM
 
 ```bash
-just build        # Build the image into podman storage.
-just vm ubuntu    # Throwaway VM from the image, discarded on exit.
+just build             # Build the image into podman storage.
+just vm ubuntu         # Throwaway VM from the image, discarded on exit.
 
-just disk         # Install it to an encrypted raw disk image, in a VM.
-just boot ubuntu  # Boot that disk image, with the console on this terminal.
+just disk              # Install it to bootc-ubuntu.img, in a VM.
+just boot ubuntu       # Boot bootc-ubuntu.img, with the console on this terminal.
 
-just live-vm      # Or boot the ISO against a blank disk.
+just live              # Build bootc-ubuntu.iso.
+just live-install      # Boot the ISO against a blank bootc-ubuntu-live.img, then
+                       # run `bootc-ubuntu-install in the live session.
+just boot-live ubuntu  # Boot bootc-ubuntu-live.img, the ISO install.
 ```
 
 The recipes above run the VMs headless. Set `display` to open a window instead:
 
 ```bash
-just display=gtk boot ""  # No account provisioned, so this lands in initial setup.
+just display=gtk boot ""  # No account, so GDM runs GNOME Initial Setup.
 ```
+
+> [!NOTE]
+> Passing no user leaves a freshly installed disk without an account, so GDM
+> shows GNOME Initial Setup instead of the login screen. Create the first
+> account there.
 
 ## Updates
 

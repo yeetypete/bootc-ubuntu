@@ -16,8 +16,14 @@ imgref := "docker.io/" + image + ":" + tag
 # Firmware for the qemu recipes. Booting this image needs UEFI.
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
-# Name of the disk image produced by `just disk`. bcvk sizes it for us.
-disk_name := "bootc-ubuntu"
+# Base name of the generated disk images and ISO.
+name := "bootc-ubuntu"
+# Disk image `just disk` installs to, and `just boot` boots. bcvk sizes it for us.
+disk_img := name + ".img"
+# Live ISO built by `just live`.
+iso := name + ".iso"
+# Disk image the live ISO installs to, and `just boot-live` boots.
+live_img := name + "-live.img"
 # Account provisioned into a test VM.
 user := "ubuntu"
 # QEMU display for the VM recipes. "none" keeps the console on this terminal;
@@ -30,6 +36,7 @@ default:
     @just --list
 
 # Build the bootc container image.
+[group('image')]
 build *args:
     podman build --target image \
         --label org.opencontainers.image.version={{ version }} \
@@ -39,11 +46,13 @@ build *args:
         {{ args }} .
 
 # Export the bootc container image as an OCI directory.
+[group('image')]
 oci: build
     rm -rf {{ oci_dir }}
     podman push --quiet {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
 
 # Push the image to its registry.
+[group('image')]
 push: build
     podman push {{ imgref }}
     podman push {{ imgref }}-{{ version }}
@@ -65,73 +74,12 @@ credentials name=user:
     printf 'sysusers.extra:%s\n' "$account"
     printf 'passwd.hashed-password.{{ name }}:%s\n' "$hashed"
 
-# Boot the image as a throwaway VM and open a shell in it. The VM is discarded on exit.
-# Pass user=<name> to login as a non-root provisioned user.
-vm user="": build
+# Boot IMG in qemu, with the console on this terminal.
+[private]
+qemu-boot img user:
     #!/usr/bin/env bash
     set -euo pipefail
-    kargs=()
-    if [[ -n "{{ user }}" ]]; then
-        pairs=$(just credentials {{ user }})
-        while read -r cred; do
-            kargs+=(--karg "systemd.set_credential_binary=$cred")
-        done <<< "$pairs"
-    fi
-    bcvk ephemeral run-ssh "${kargs[@]}" {{ imgref }}
-
-# Install the image to an encrypted raw disk image that can be booted or written
-# to a device. Prompts for a passphrase. The install runs in a VM.
-disk: oci
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # bcvk creates the image when it is missing, so removing it clears the
-    # previous run's partition table.
-    rm -f {{ disk_name }}.img
-    install="bootc-ubuntu-install \
-    /dev/disk/by-id/virtio-target \
-    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ tag }} {{ imgref }}"
-    bcvk ephemeral run-ssh --rm \
-        --mount-disk-file "$PWD/{{ disk_name }}.img:target" \
-        --bind "$PWD:repo" \
-        {{ imgref }} \
-        -t "$install"
-
-# Build a live ISO that boots this image and installs it.
-live *args: oci
-    #!/usr/bin/env bash
-    set -euo pipefail
-    rm -rf .live
-    mkdir .live
-    trap 'rm -rf .live' EXIT
-    cp -al {{ oci_dir }} .live/image.oci
-    podman build --target iso-out \
-        --build-context oci=.live \
-        --build-arg ISO_NAME={{ disk_name }} \
-        --build-arg IMAGE_REF={{ imgref }} \
-        --output type=local,dest=. \
-        {{ args }} .
-
-# Boot the live ISO in qemu against a blank disk.
-live-vm target_size="20G":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    target={{ disk_name }}-target.img
-    [[ -f $target ]] || truncate -s {{ target_size }} "$target"
-    exec qemu-system-x86_64 \
-        -enable-kvm \
-        -machine q35 \
-        -cpu host \
-        -smp 4 \
-        -m 8192 \
-        {{ ovmf }} \
-        -drive file={{ disk_name }}.iso,media=cdrom \
-        -drive file="$target",format=raw,if=virtio \
-        {{ graphics }}
-
-# Boot the disk image from `just disk` in qemu, with the console on this terminal.
-boot user=user:
-    #!/usr/bin/env bash
-    set -euo pipefail
+    [[ -f {{ img }} ]] || { echo "{{ img }} does not exist." >&2; exit 1; }
     creds=()
     if [[ -n "{{ user }}" ]]; then
         pairs=$(just credentials {{ user }})
@@ -148,20 +96,99 @@ boot user=user:
         -smp 2 \
         -m 4096 \
         {{ ovmf }} \
-        -drive file={{ disk_name }}.img,format=raw,if=virtio \
+        -drive file={{ img }},format=raw,if=virtio \
         {{ graphics }}
 
+# Boot the image as a throwaway VM and open a shell in it. The VM is discarded on exit.
+# Pass user=<name> to login as a non-root provisioned user.
+[doc('Boot the image as a throwaway VM and open a shell in it.')]
+[group('vm')]
+vm user="": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kargs=()
+    if [[ -n "{{ user }}" ]]; then
+        pairs=$(just credentials {{ user }})
+        while read -r cred; do
+            kargs+=(--karg "systemd.set_credential_binary=$cred")
+        done <<< "$pairs"
+    fi
+    bcvk ephemeral run-ssh "${kargs[@]}" {{ imgref }}
+
+# Install the image to an encrypted raw disk image that can be booted or written
+# to a device. Prompts for a passphrase. The install runs in a VM.
+[doc('Install the image to an encrypted raw disk image.')]
+[group('disk')]
+disk: oci
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # bcvk creates the image when it is missing, so removing it clears the
+    # previous run's partition table.
+    rm -f {{ disk_img }}
+    install="bootc-ubuntu-install \
+    /dev/disk/by-id/virtio-target \
+    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ tag }} {{ imgref }}"
+    bcvk ephemeral run-ssh --rm \
+        --mount-disk-file "$PWD/{{ disk_img }}:target" \
+        --bind "$PWD:repo" \
+        {{ imgref }} \
+        -t "$install"
+
+# Boot the disk image from `just disk`.
+[group('disk')]
+boot user=user: (qemu-boot disk_img user)
+
+# Build a live ISO that boots this image and installs it.
+[group('iso')]
+live *args: oci
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf .live
+    mkdir .live
+    trap 'rm -rf .live' EXIT
+    cp -al {{ oci_dir }} .live/image.oci
+    podman build --target iso-out \
+        --build-context oci=.live \
+        --build-arg ISO_NAME={{ name }} \
+        --build-arg IMAGE_REF={{ imgref }} \
+        --output type=local,dest=. \
+        {{ args }} .
+
+# Boot the live ISO in qemu against a blank disk.
+[doc('Boot the live ISO against a blank disk, to install onto it.')]
+[group('iso')]
+live-install size="20G":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -f {{ live_img }}
+    truncate -s {{ size }} {{ live_img }}
+    exec qemu-system-x86_64 \
+        -enable-kvm \
+        -machine q35 \
+        -cpu host \
+        -smp 4 \
+        -m 8192 \
+        {{ ovmf }} \
+        -drive file={{ iso }},media=cdrom \
+        -drive file={{ live_img }},format=raw,if=virtio \
+        {{ graphics }}
+
+# Boot the disk image `just live-install` installed to.
+[group('iso')]
+boot-live user=user: (qemu-boot live_img user)
+
 # List running VMs.
+[group('vm')]
 vm-ps:
-    @pgrep -a -f '[q]emu-system-x86_64 .*{{ disk_name }}' || true
+    @pgrep -a -f '[q]emu-system-x86_64 .*{{ name }}' || true
     @bcvk ephemeral ps || true
 
 # Stop all running VMs.
+[group('vm')]
 vm-kill:
-    -pkill -f '[q]emu-system-x86_64 .*{{ disk_name }}'
+    -pkill -f '[q]emu-system-x86_64 .*{{ name }}'
     -bcvk ephemeral rm-all --force
 
 # Remove the generated OCI archive, disk images and ISO.
 clean:
-    rm -rf {{ oci_dir }} {{ disk_name }}.img {{ disk_name }}-target.img \
-        {{ disk_name }}.iso .live
+    rm -rf {{ oci_dir }} {{ disk_img }} {{ live_img }} {{ iso }} .live
