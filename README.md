@@ -72,8 +72,13 @@ just boot-live ubuntu  # Boot bootc-ubuntu-live.img, the ISO install.
 The recipes above run the VMs headless. Set `display` to open a window instead:
 
 ```bash
-just display=gtk boot ""  # No account provisioned, so this lands in initial setup.
+just display=gtk boot ""  # No account, so GDM runs GNOME Initial Setup.
 ```
+
+> [!NOTE]
+> Passing no user leaves a freshly installed disk without an account, so GDM
+> shows GNOME Initial Setup instead of the login screen. Create the first
+> account there.
 
 ## Updates
 
