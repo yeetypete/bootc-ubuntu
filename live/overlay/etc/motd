@@ -1,8 +1,0 @@
-
-Ubuntu bootc live session.
-
-Install this system to a disk, wiping it, with:
-
-    ubuntu-bootc-install /dev/nvme0n1
-
-Run `lsblk` first to find the right disk.
