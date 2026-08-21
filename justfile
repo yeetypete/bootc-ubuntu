@@ -19,10 +19,8 @@ ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVM
 disk_name := "ubuntu-bootc"
 # Scratch space the install VM gets for unpacking the image.
 scratch_size := "8G"
-# Account provisioned into a test VM, recreated as the base image had it.
+# Account provisioned into a test VM.
 user := "ubuntu"
-# Groups the base image's "ubuntu" user belonged to.
-user_groups := "adm dialout cdrom floppy sudo audio dip video plugdev"
 
 # List available recipes.
 default:
@@ -57,12 +55,8 @@ credentials name=user:
     [[ -n "$password" ]] || { echo "Password must not be empty." >&2; exit 1; }
     # The UID is spelled out because sysusers allocates from the system range
     # otherwise, and a login below UID_MIN is hidden from the login screen.
-    account=$({
-        printf 'u %s 1000 "Ubuntu" /var/home/%s /bin/bash\n' {{ name }} {{ name }}
-        for group in {{ user_groups }}; do
-            printf 'm %s %s\n' {{ name }} "$group"
-        done
-    } | base64 -w0)
+    account=$(printf 'u %s 1000 "Ubuntu" /var/home/%s /bin/bash\nm %s sudo\n' \
+        {{ name }} {{ name }} {{ name }} | base64 -w0)
     hashed=$(printf '%s' "$(openssl passwd -6 "$password")" | base64 -w0)
     printf 'sysusers.extra:%s\n' "$account"
     printf 'passwd.hashed-password.{{ name }}:%s\n' "$hashed"
