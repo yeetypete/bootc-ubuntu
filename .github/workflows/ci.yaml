@@ -44,9 +44,14 @@ jobs:
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL
-          df -h /
+          shopt -s dotglob
+          sudo rm -rf /usr/local/lib/android/* &
+          sudo rm -rf /opt/hostedtoolcache/* &
+          sudo rm -rf /usr/share/dotnet/* &
+          sudo rm -rf /opt/ghc/* /usr/local/.ghcup/* /usr/share/swift/* &
+          sudo docker image prune --all --force &
+          wait
+          df -h / /mnt
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -58,10 +63,13 @@ jobs:
 
       - name: Put container storage on scratch disk
         run: |
-          sudo install -d -o "$USER" /mnt/containers
+          sudo install -d -o "$USER" /mnt/containers /mnt/tmp
           mkdir -p ~/.config/containers
           printf '[storage]\ndriver = "overlay"\ngraphroot = "/mnt/containers"\n' \
             > ~/.config/containers/storage.conf
+          # Each layer is written through TMPDIR, which defaults to /var/tmp
+          # on the small disk.
+          echo "TMPDIR=/mnt/tmp" >> "$GITHUB_ENV"
           podman info --format 'podman {{ .Version.Version }} storing images in {{ .Store.GraphRoot }}'
 
       - name: Log in to Docker Hub
