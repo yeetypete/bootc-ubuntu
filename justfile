@@ -8,11 +8,14 @@ version := trim_start_match("v0.0.0", "v")
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
 # Tag the image is built with.
 tag := "26.04"
+# Registry repository holding the layer cache, e.g. docker.io/yeetypete/bootc-ubuntu-cache.
+cache_repo := ""
 
 # Local OCI layout the image is exported to.
 oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
 imgref := "docker.io/" + image + ":" + tag
+cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
 # Firmware for the qemu recipes. Booting this image needs UEFI.
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
@@ -42,7 +45,8 @@ build *args:
         --label org.opencontainers.image.version={{ version }} \
         --label org.opencontainers.image.revision={{ revision }} \
         --tag {{ imgref }} \
-        --tag {{ imgref }}-{{ version }} \
+        --tag {{ imgref }}-{{ revision }} \
+        {{ cache_args }} \
         {{ args }} .
 
 # Export the bootc container image as an OCI directory.
@@ -51,11 +55,17 @@ oci: build
     rm -rf {{ oci_dir }}
     podman push --quiet {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
 
-# Push the image to its registry.
+# Push the image to its registry under the commit it was built from.
 [group('image')]
 push: build
-    podman push {{ imgref }}
+    podman push {{ imgref }}-{{ revision }}
+
+# Publish a tagged release.
+[group('image')]
+push-release: push
+    podman tag {{ imgref }}-{{ revision }} {{ imgref }}-{{ version }}
     podman push {{ imgref }}-{{ version }}
+    podman push {{ imgref }}
 
 # Print the credentials that provision NAME, one name:base64 pair per line. The
 # account lives only in what is passed in at boot, not the image.
