@@ -1,5 +1,8 @@
 # hadolint global ignore=DL3008,DL3059
 
+# Volume label of the live ISO.
+ARG ISO_LABEL=UBUNTU_BOOTC
+
 FROM ubuntu:26.04 AS bootc-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -187,3 +190,54 @@ RUN --mount=type=bind,from=split,target=/target \
 FROM split AS image
 
 COPY --from=uki /uki/*.efi /boot/EFI/Linux/
+
+
+# A live ISO that boots this image and installs it. Its own unified kernel image
+# comes from the rootfs stage, which still has a kernel to build one from, and
+# carries a command line for the live session rather than the sealed one.
+FROM rootfs AS live-uki
+
+ARG ISO_LABEL
+
+RUN mkdir -p /var/tmp /var/roothome && \
+    kver="$(basename "$(echo /usr/lib/modules/*)")" && \
+    dracut --force --no-hostonly --reproducible --zstd --uefi \
+      --add dmsquash-live --omit bootc \
+      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image console=tty0 console=ttyS0,115200" \
+      --kver "${kver}" /live.efi
+
+
+FROM ubuntu:26.04 AS iso
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG ISO_LABEL
+ARG ISO_NAME
+# Registry the installed system fetches updates from, recorded on the ISO.
+ARG IMAGE_REF
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    dosfstools \
+    mtools \
+    squashfs-tools \
+    xorriso
+
+COPY --from=image / /rootfs/
+# Live-only files, which exist on the ISO and never on an installed system.
+COPY live/overlay/ /rootfs/
+COPY --from=live-uki /live.efi /live.efi
+# The image and where it updates from. An ISO installation needs no network.
+# hadolint ignore=DL3022
+COPY --from=oci image.oci /iso/image.oci
+RUN : "${IMAGE_REF:?no registry reference to record on the ISO}" && \
+    echo "${IMAGE_REF}" > /iso/image.ref
+
+COPY live/build-iso.sh /usr/local/bin/build-iso
+RUN ISO_LABEL="${ISO_LABEL}" ISO_NAME="${ISO_NAME}" build-iso
+
+
+FROM scratch AS iso-out
+
+COPY --from=iso /out/ /

@@ -1,3 +1,5 @@
 image.oci
 *.img
 __pycache__/
+*.iso
+.live/

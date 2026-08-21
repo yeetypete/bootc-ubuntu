@@ -9,7 +9,8 @@ revision := `git rev-parse HEAD 2>/dev/null || echo ""`
 # Tag the image is built with.
 tag := "26.04"
 
-oci_archive := "image.oci"
+# Local OCI layout the image is exported to.
+oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
 imgref := "docker.io/" + image + ":" + tag
 # Firmware for the qemu recipes. Booting this image needs UEFI.
@@ -17,8 +18,6 @@ ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVM
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
 # Name of the disk image produced by `just disk`. bcvk sizes it for us.
 disk_name := "ubuntu-bootc"
-# Scratch space the install VM gets for unpacking the image.
-scratch_size := "8G"
 # Account provisioned into a test VM.
 user := "ubuntu"
 
@@ -35,9 +34,10 @@ build *args:
         --tag {{ imgref }}-{{ version }} \
         {{ args }} .
 
-# Export the bootc container image as an OCI archive.
-archive: build
-    podman push --quiet {{ imgref }} oci-archive:{{ oci_archive }}:{{ tag }}
+# Export the bootc container image as an OCI directory.
+oci: build
+    rm -rf {{ oci_dir }}
+    podman push --quiet {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
 
 # Push the image to its registry.
 push: build
@@ -77,24 +77,52 @@ vm user="": build
 
 # Install the image to an encrypted raw disk image that can be booted or written
 # to a device. Prompts for a passphrase. The install runs in a VM.
-disk: archive
+disk: oci
     #!/usr/bin/env bash
     set -euo pipefail
     # bcvk creates the image when it is missing, so removing it clears the
     # previous run's partition table.
     rm -f {{ disk_name }}.img
-    # In the VM /var is a tmpfs carved out of /run which is too small to
-    # unpack the image into. Give /var/tmp its own tmpfs backed by the swap
-    # device. This is what bcvk does in its own to-disk.
-    install="mount -t tmpfs -o size={{ scratch_size }} tmpfs /var/tmp && \
-    ubuntu-bootc-install \
+    install="ubuntu-bootc-install \
     /dev/disk/by-id/virtio-target \
-    oci-archive:/run/virtiofs-mnt-repo/{{ oci_archive }}:{{ tag }} {{ imgref }}"
-    bcvk ephemeral run-ssh --rm --add-swap {{ scratch_size }} \
+    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ tag }} {{ imgref }}"
+    bcvk ephemeral run-ssh --rm \
         --mount-disk-file "$PWD/{{ disk_name }}.img:target" \
         --bind "$PWD:repo" \
         {{ imgref }} \
         -t "$install"
+
+# Build a live ISO that boots this image and installs it.
+live *args: oci
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf .live
+    mkdir .live
+    trap 'rm -rf .live' EXIT
+    cp -al {{ oci_dir }} .live/image.oci
+    podman build --target iso-out \
+        --build-context oci=.live \
+        --build-arg ISO_NAME={{ disk_name }} \
+        --build-arg IMAGE_REF={{ imgref }} \
+        --output type=local,dest=. \
+        {{ args }} .
+
+# Boot the live ISO in qemu against a blank disk.
+live-vm target_size="20G":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target={{ disk_name }}-target.img
+    [[ -f $target ]] || truncate -s {{ target_size }} "$target"
+    qemu-system-x86_64 \
+        -enable-kvm \
+        -machine q35 \
+        -cpu host \
+        -smp 4 \
+        -m 8192 \
+        {{ ovmf }} \
+        -drive file={{ disk_name }}.iso,media=cdrom \
+        -drive file="$target",format=raw,if=virtio \
+        -nographic
 
 # Boot the disk image from `just disk` in qemu, with the console on this terminal.
 boot user=user:
@@ -121,5 +149,5 @@ boot user=user:
 
 # Remove the generated OCI archive, disk images and ISO.
 clean:
-    rm -rf {{ oci_archive }} {{ disk_name }}.img {{ disk_name }}-target.img \
+    rm -rf {{ oci_dir }} {{ disk_name }}.img {{ disk_name }}-target.img \
         {{ disk_name }}.iso .live
