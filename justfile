@@ -53,8 +53,8 @@ credentials name=user:
     read -rsp "Password for {{ name }}: " password < /dev/tty > /dev/tty
     echo > /dev/tty
     [[ -n "$password" ]] || { echo "Password must not be empty." >&2; exit 1; }
-    # The UID is spelled out because sysusers allocates from the system range
-    # otherwise, and a login below UID_MIN is hidden from the login screen.
+    # Set the UID explicitly. sysusers allocates from the system range otherwise,
+    # and a login below UID_MIN is hidden from the login screen.
     account=$(printf 'u %s 1000 "Ubuntu" /var/home/%s /bin/bash\nm %s sudo\n' \
         {{ name }} {{ name }} {{ name }} | base64 -w0)
     hashed=$(printf '%s' "$(openssl passwd -6 "$password")" | base64 -w0)
@@ -131,7 +131,7 @@ boot user=user:
     creds=()
     if [[ -n "{{ user }}" ]]; then
         pairs=$(just credentials {{ user }})
-        # SMBIOS spells the pair name=value rather than name:value.
+        # SMBIOS separates the pair with = rather than :.
         while read -r cred; do
             creds+=(-smbios "type=11,value=io.systemd.credential.binary:${cred/:/=}")
         done <<< "$pairs"
