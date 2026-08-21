@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Install a botc image onto a LUKS2-encrypted root.
+r"""Install this image onto a disk, with a LUKS2-encrypted root.
 
-Partitions a disk according to /usr/lib/ubuntu-bootc/repart.d, encrypts the root
-with a passphrase, and installs the image into it. Run it from the image itself:
+Partitions the disk according to /usr/lib/ubuntu-bootc/repart.d, encrypts the
+root with a passphrase, and installs the image into it. Normally run this from
+a live ISO, which includes the bootc image:
+
+    ubuntu-bootc-install /dev/nvme0n1
+
+You may also run `ubuntu-bootc-install` from the image as a container, against
+a disk on the host:
 
     podman run --rm -it --privileged --pid=host --ipc=host \\
       -v /dev:/dev -v /run/udev:/run/udev:ro \\
-      IMAGE /usr/lib/ubuntu-bootc/install-encrypted.py /dev/nvme0n1 IMGREF
+      IMAGE ubuntu-bootc-install /dev/nvme0n1 IMGREF
 """
 
 import argparse
@@ -26,6 +32,11 @@ ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 DEFINITIONS = Path("/usr/lib/ubuntu-bootc/repart.d")
 MAPPING = "ubuntu-bootc-root"
 
+# dracut's dmsquash-live mounts the ISO here, so this is where an install off
+# the live media finds the image and the registry it updates from.
+LIVE_ARCHIVE = Path("/run/initramfs/live/image.oci")
+LIVE_IMGREF = Path("/run/initramfs/live/image.ref")
+
 # bootc unpacks the source image here, and containers/image hardcodes the path
 # rather than honouring TMPDIR.
 SCRATCH = Path("/var/tmp")
@@ -43,7 +54,7 @@ def partition_of_type(device: Path, type_guid: str) -> Path:
     for part in json.loads(out)["blockdevices"]:
         if (part.get("parttype") or "").lower() == type_guid:
             return Path(part["path"])
-    sys.exit(f"no partition of type {type_guid} on {device}")
+    sys.exit(f"no partition of type {type_guid} on {device}.")
 
 
 def prompt_passphrase() -> str:
@@ -77,8 +88,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("device", type=Path, help="Disk to install to.")
     parser.add_argument(
         "source_imgref",
+        nargs="?",
+        default=None,
         help="Image to install, in containers-transports(5) form, such as "
-        "docker://docker.io/example/ubuntu-bootc:26.04",
+        "docker://docker.io/example/ubuntu-bootc:26.04. Defaults to the archive "
+        "the live ISO carries, so an install off the ISO needs no network.",
     )
     parser.add_argument(
         "target_imgref",
@@ -87,6 +101,18 @@ def parse_args() -> argparse.Namespace:
         "as docker.io/example/ubuntu-bootc:26.04.",
     )
     return parser.parse_args()
+
+
+def resolve_imgrefs(args: argparse.Namespace) -> None:
+    """Fall back to the image the live ISO was built with, and its registry."""
+    live_imgref = LIVE_IMGREF.read_text().strip() if LIVE_IMGREF.exists() else ""
+    if not args.source_imgref:
+        if not (LIVE_ARCHIVE.exists() and live_imgref):
+            sys.exit("no source image given, and this is not a live ISO carrying one.")
+        tag = live_imgref.rsplit(":", 1)[1]
+        args.source_imgref = f"oci-archive:{LIVE_ARCHIVE}:{tag}"
+    if not args.target_imgref:
+        args.target_imgref = live_imgref
 
 
 def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
@@ -110,8 +136,6 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
     esp = partition_of_type(args.device, ESP_TYPE)
     root = partition_of_type(args.device, ROOT_TYPE)
 
-    # bootc is handed an already-open mapping and cannot tell the root is
-    # encrypted, so it never adds an unlock argument of its own.
     luks_uuid = subprocess.run(
         ["cryptsetup", "luksUUID", root],
         check=True,
@@ -121,13 +145,14 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
 
     print(f"Unlocking {root}")
     subprocess.run(
-        ["cryptsetup", "luksOpen", root, MAPPING, f"--key-file={keyfile}"], check=True
+        ["cryptsetup", "luksOpen", root, MAPPING, f"--key-file={keyfile}"],
+        check=True,
     )
     subprocess.run(["mount", f"/dev/mapper/{MAPPING}", target], check=True)
 
     extra: list[str] = []
     if args.target_imgref:
-        extra += ["--target-imgref", args.target_imgref]
+        extra.append(f"--target-imgref={args.target_imgref}")
     elif not args.source_imgref.startswith(("docker://", "registry:")):
         print(
             "Warning: no target_imgref and source_imgref is not a registry "
@@ -142,11 +167,9 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
             "install",
             "to-filesystem",
             "--composefs-backend",
-            "--karg",
-            f"rd.luks.uuid={luks_uuid}",
-            *(arg for karg in args.karg for arg in ("--karg", karg)),
-            "--source-imgref",
-            args.source_imgref,
+            f"--karg=rd.luks.uuid={luks_uuid}",
+            *(f"--karg={karg}" for karg in args.karg),
+            f"--source-imgref={args.source_imgref}",
             "--skip-fetch-check",
             *extra,
             target,
@@ -156,14 +179,15 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
 
     print(f"\nInstalled. ESP {esp}, encrypted root {root}.")
     print("Add a TPM2 keyslot once Secure Boot is enabled with:")
-    print(f"  systemd-cryptenroll --tpm2-device=auto {root}")
+    print(f"  systemd-cryptenroll --tpm2-device=auto {root}.")
 
 
 def main() -> None:
     args = parse_args()
+    resolve_imgrefs(args)
 
     if os.geteuid() != 0:
-        sys.exit("must run as root")
+        sys.exit("This script must run as root.")
     if not args.device.is_block_device():
         sys.exit(f"{args.device} is not a block device.")
 
@@ -171,7 +195,7 @@ def main() -> None:
     if free < SCRATCH_NEEDED:
         sys.exit(
             f"{SCRATCH} has {free // 1024**2}M free, the install needs about "
-            f"{SCRATCH_NEEDED // 1024**2}M there. Mount more space and retry."
+            f"{SCRATCH_NEEDED // 1024**2}M there. Mount more space and retry.",
         )
 
     confirm(args.device)
