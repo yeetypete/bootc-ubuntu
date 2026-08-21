@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     make bin install DESTDIR="${DESTDIR}"
 
 
-FROM ubuntu:26.04 AS rootfs
+FROM ubuntu:26.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -82,7 +82,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     systemd-resolved \
     systemd-timesyncd \
     tpm2-tools \
-    ubuntu-minimal \
     zstd
 
 # Must land after apt: these tmpfiles.d rules retarget /var/lib/dpkg, which
@@ -94,18 +93,55 @@ COPY rootfs/ /
 COPY --from=bootc-builder /out/usr/ /usr/
 RUN ldconfig
 
+# Drop the base image's 'ubuntu' user, whose home goes away with /home in the
+# rootfs stage. systemd-sysusers creates the account at boot from a credential,
+# and pam_mkhomedir creates its home directory.
+RUN userdel ubuntu && \
+    pam-auth-update --enable mkhomedir
+
+# Workaround: Ubuntu 25.04 and newer load the bwrap-userns-restrict AppArmor
+# profile, which denies all capabilities to children of /usr/bin/bwrap. bcvk runs
+# qemu and virtiofsd there, so its VMs never finish booting. Move the binary off
+# the matched path to avoid the profile.
+RUN mv /usr/bin/bwrap /usr/libexec/bwrap && \
+    ln -s ../libexec/bwrap /usr/bin/bwrap
+
+RUN systemctl enable \
+    NetworkManager.service \
+    ssh.service \
+    systemd-resolved.service \
+    systemd-timesyncd.service \
+    tmp.mount && \
+    systemctl disable \
+    apt-daily-upgrade.service \
+    apt-daily-upgrade.timer \
+    apt-daily.service \
+    apt-daily.timer
+
+
+FROM base AS desktop
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    gdm3 \
+    gnome-initial-setup \
+    gnome-shell \
+    ptyxis \
+    ubuntu-minimal \
+    ubuntu-session
+
+RUN systemctl enable gdm.service
+
+
+FROM desktop AS rootfs
+
 # Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
 RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
     depmod "${kver}" && \
     dracut --force --no-hostonly --reproducible --zstd --verbose \
       --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img" && \
     cp "/boot/vmlinuz-${kver}" "/usr/lib/modules/${kver}/vmlinuz"
-
-# Drop the base image's 'ubuntu' user, whose home goes with /home in the layout
-# step below. systemd-sysusers creates the account at boot from a credential
-# and pam_mkhomedir creates its home directory.
-RUN userdel ubuntu && \
-    pam-auth-update --enable mkhomedir
 
 # Make the filesystem layout ostree-compatible. Remove the placeholder fstab too,
 # or bootc's /etc overlay makes libmount warn "fstab has been modified" at boot.
@@ -121,18 +157,6 @@ RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
     ln -s /var/mnt /mnt && \
     ln -s sysroot/ostree /ostree && \
     rm -f /etc/fstab
-
-RUN systemctl enable \
-    NetworkManager.service \
-    ssh.service \
-    systemd-resolved.service \
-    systemd-timesyncd.service \
-    tmp.mount && \
-    systemctl disable \
-    apt-daily-upgrade.service \
-    apt-daily-upgrade.timer \
-    apt-daily.service \
-    apt-daily.timer
 
 # Relocate the dpkg database to /usr so it persists across image updates (/var is
 # only applied at first provisioning). A tmpfiles.d symlink restores /var/lib/dpkg.
@@ -196,7 +220,9 @@ COPY --from=uki /uki/*.efi /boot/EFI/Linux/
 
 # A live ISO that boots this image and installs it. Its own unified kernel image
 # comes from the rootfs stage, which still has a kernel to build one from, and
-# carries a command line for the live session rather than the sealed one.
+# carries a command line for the live session rather than the sealed one. It
+# boots multi-user.target rather than the image's default, because the ISO
+# installer is only meant to run headless.
 FROM rootfs AS live-uki
 
 ARG ISO_LABEL
@@ -205,7 +231,7 @@ RUN mkdir -p /var/tmp /var/roothome && \
     kver="$(basename "$(echo /usr/lib/modules/*)")" && \
     dracut --force --no-hostonly --reproducible --zstd --uefi \
       --add dmsquash-live --omit bootc \
-      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image console=tty0 console=ttyS0,115200" \
+      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image systemd.unit=multi-user.target console=tty0 console=ttyS0,115200" \
       --kver "${kver}" /live.efi
 
 

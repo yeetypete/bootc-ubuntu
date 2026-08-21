@@ -11,7 +11,7 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 
 ## What's in the image
 
-- Ubuntu 26.04.
+- Ubuntu 26.04 with GNOME desktop.
 - `bootc` with the [composefs backend](https://bootc.dev/bootc/experimental-composefs.html)
   enabled for image storage and deployment, giving a read-only root filesystem
   verified with `fs-verity`.
@@ -49,6 +49,8 @@ writes anything:
 bootc-ubuntu-install /dev/nvme0n1  # The disk to install to, wiped.
 ```
 
+Reboot when it finishes and go through GNOME's initial setup.
+
 To unlock with the TPM instead of a passphrase, enroll one afterwards with
 [`systemd-cryptenroll`](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html).
 
@@ -62,6 +64,12 @@ just disk         # Install it to an encrypted raw disk image, in a VM.
 just boot ubuntu  # Boot that disk image, with the console on this terminal.
 
 just live-vm      # Or boot the ISO against a blank disk.
+```
+
+The recipes above run the VMs headless. Set `display` to open a window instead:
+
+```bash
+just display=gtk boot ""  # No account provisioned, so this lands in initial setup.
 ```
 
 ## Updates

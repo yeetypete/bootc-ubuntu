@@ -20,6 +20,10 @@ ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVM
 disk_name := "bootc-ubuntu"
 # Account provisioned into a test VM.
 user := "ubuntu"
+# QEMU display for the VM recipes. "none" keeps the console on this terminal;
+# set display=gtk for a window, the only way to see the desktop.
+display := "none"
+graphics := if display == "none" { "-nographic" } else { "-vga none -device virtio-vga-gl -display " + display + ",gl=on -serial mon:stdio" }
 
 # List available recipes.
 default:
@@ -113,7 +117,7 @@ live-vm target_size="20G":
     set -euo pipefail
     target={{ disk_name }}-target.img
     [[ -f $target ]] || truncate -s {{ target_size }} "$target"
-    qemu-system-x86_64 \
+    exec qemu-system-x86_64 \
         -enable-kvm \
         -machine q35 \
         -cpu host \
@@ -122,7 +126,7 @@ live-vm target_size="20G":
         {{ ovmf }} \
         -drive file={{ disk_name }}.iso,media=cdrom \
         -drive file="$target",format=raw,if=virtio \
-        -nographic
+        {{ graphics }}
 
 # Boot the disk image from `just disk` in qemu, with the console on this terminal.
 boot user=user:
@@ -136,7 +140,7 @@ boot user=user:
             creds+=(-smbios "type=11,value=io.systemd.credential.binary:${cred/:/=}")
         done <<< "$pairs"
     fi
-    qemu-system-x86_64 \
+    exec qemu-system-x86_64 \
         "${creds[@]}" \
         -enable-kvm \
         -machine q35 \
@@ -145,7 +149,17 @@ boot user=user:
         -m 4096 \
         {{ ovmf }} \
         -drive file={{ disk_name }}.img,format=raw,if=virtio \
-        -nographic
+        {{ graphics }}
+
+# List running VMs.
+vm-ps:
+    @pgrep -a -f '[q]emu-system-x86_64 .*{{ disk_name }}' || true
+    @bcvk ephemeral ps || true
+
+# Stop all running VMs.
+vm-kill:
+    -pkill -f '[q]emu-system-x86_64 .*{{ disk_name }}'
+    -bcvk ephemeral rm-all --force
 
 # Remove the generated OCI archive, disk images and ISO.
 clean:
