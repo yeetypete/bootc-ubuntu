@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 r"""Install this image onto a disk, with a LUKS2-encrypted root.
 
-Partitions the disk according to /usr/lib/ubuntu-bootc/repart.d, encrypts the
+Partitions the disk according to /usr/lib/bootc-ubuntu/repart.d, encrypts the
 root with a passphrase, and installs the image into it. Normally run this from
 a live ISO, which includes the bootc image:
 
-    ubuntu-bootc-install /dev/nvme0n1
+    bootc-ubuntu-install /dev/nvme0n1
 
-You may also run `ubuntu-bootc-install` from the image as a container, against
+You may also run `bootc-ubuntu-install` from the image as a container, against
 a disk on the host:
 
     podman run --rm -it --privileged --pid=host --ipc=host \\
       -v /dev:/dev -v /run/udev:/run/udev:ro \\
-      IMAGE ubuntu-bootc-install /dev/nvme0n1 IMGREF
+      IMAGE bootc-ubuntu-install /dev/nvme0n1 IMGREF
 """
 
 import argparse
@@ -29,8 +29,8 @@ from pathlib import Path
 ESP_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 
-DEFINITIONS = Path("/usr/lib/ubuntu-bootc/repart.d")
-MAPPING = "ubuntu-bootc-root"
+DEFINITIONS = Path("/usr/lib/bootc-ubuntu/repart.d")
+MAPPING = "bootc-ubuntu-root"
 
 # dracut's dmsquash-live mounts the ISO here, so this is where an install off
 # the live media finds the image and the registry it updates from.
@@ -84,14 +84,14 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         default=None,
         help="Image to install, in containers-transports(5) form, such as "
-        "docker://docker.io/example/ubuntu-bootc:26.04. Defaults to the archive "
+        "docker://docker.io/example/bootc-ubuntu:26.04. Defaults to the archive "
         "the live ISO carries, so an install off the ISO needs no network.",
     )
     parser.add_argument(
         "target_imgref",
         nargs="?",
         help="Registry reference the installed system fetches updates from, such "
-        "as docker.io/example/ubuntu-bootc:26.04.",
+        "as docker.io/example/bootc-ubuntu:26.04.",
     )
     return parser.parse_args()
 

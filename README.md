@@ -29,7 +29,7 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 ## Installing
 
 ```bash
-just live  # Build ubuntu-bootc.iso.
+just live  # Build bootc-ubuntu.iso.
 ```
 
 The ISO includes a bootc image. The installation does not require a network
@@ -38,7 +38,7 @@ connection.
 To install, write the ISO to a USB device:
 
 ```bash
-sudo cp ubuntu-bootc.iso /dev/sdX && sync  # The device itself, not a partition.
+sudo cp bootc-ubuntu.iso /dev/sdX && sync  # The device itself, not a partition.
 ```
 
 Boot the device, then follow the prompt. The live session lists the disks it
@@ -46,7 +46,7 @@ finds, and the installer asks for confirmation and a LUKS passphrase before it
 writes anything:
 
 ```bash
-ubuntu-bootc-install /dev/nvme0n1  # The disk to install to, wiped.
+bootc-ubuntu-install /dev/nvme0n1  # The disk to install to, wiped.
 ```
 
 To unlock with the TPM instead of a passphrase, enroll one afterwards with

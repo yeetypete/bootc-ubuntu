@@ -5,7 +5,7 @@ Ubuntu bootc live session.
 
 Install this system to a disk, wiping it, with:
 
-    ubuntu-bootc-install DEVICE
+    bootc-ubuntu-install DEVICE
 
 Disks on this machine:
 

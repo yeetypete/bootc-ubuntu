@@ -1,7 +1,7 @@
-# ubuntu-bootc developer tasks.
+# bootc-ubuntu developer tasks.
 
 # Image repository for the built image.
-image := "yeetypete/ubuntu-bootc"
+image := "yeetypete/bootc-ubuntu"
 # Version for image labels and the tag suffix, without its leading "v".
 version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
@@ -17,7 +17,7 @@ imgref := "docker.io/" + image + ":" + tag
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
 # Name of the disk image produced by `just disk`. bcvk sizes it for us.
-disk_name := "ubuntu-bootc"
+disk_name := "bootc-ubuntu"
 # Account provisioned into a test VM.
 user := "ubuntu"
 
@@ -83,7 +83,7 @@ disk: oci
     # bcvk creates the image when it is missing, so removing it clears the
     # previous run's partition table.
     rm -f {{ disk_name }}.img
-    install="ubuntu-bootc-install \
+    install="bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
     oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ tag }} {{ imgref }}"
     bcvk ephemeral run-ssh --rm \

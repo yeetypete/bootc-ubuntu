@@ -1,7 +1,7 @@
 # hadolint global ignore=DL3008,DL3059
 
 # Volume label of the live ISO.
-ARG ISO_LABEL=UBUNTU_BOOTC
+ARG ISO_LABEL=BOOTC_UBUNTU
 
 FROM ubuntu:26.04 AS bootc-builder
 
