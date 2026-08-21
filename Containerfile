@@ -213,7 +213,9 @@ COPY --from=uki /uki/*.efi /boot/EFI/Linux/
 
 # A live ISO that boots this image and installs it. Its own unified kernel image
 # comes from the rootfs stage, which still has a kernel to build one from, and
-# carries a command line for the live session rather than the sealed one.
+# carries a command line for the live session rather than the sealed one. It
+# boots multi-user.target rather than the image's default, because the ISO
+# installer is only meant to run headless.
 FROM rootfs AS live-uki
 
 ARG ISO_LABEL
