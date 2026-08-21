@@ -96,20 +96,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_imgrefs(args: argparse.Namespace) -> None:
+def resolve_imgrefs(
+    source_imgref: str | None,
+    target_imgref: str | None,
+) -> tuple[str, str]:
     """Fall back to the image the live ISO was built with, and its registry."""
     live_imgref = LIVE_IMGREF.read_text().strip() if LIVE_IMGREF.exists() else ""
-    if not args.source_imgref:
+    if not source_imgref:
         if not (LIVE_OCI.exists() and live_imgref):
             sys.exit("no source image given, and this is not a live ISO carrying one.")
         tag = live_imgref.rsplit(":", 1)[1]
-        args.source_imgref = f"oci:{LIVE_OCI}:{tag}"
-    if not args.target_imgref:
-        args.target_imgref = live_imgref
+        source_imgref = f"oci:{LIVE_OCI}:{tag}"
+    return source_imgref, target_imgref or live_imgref
 
 
-def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
-    print(f"Partitioning {args.device}")
+def install(
+    device: Path,
+    source_imgref: str,
+    target_imgref: str,
+    keyfile: Path,
+    target: Path,
+) -> None:
+    print(f"Partitioning {device}")
     subprocess.run(
         [
             "systemd-repart",
@@ -117,7 +125,7 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
             "--empty=force",
             "--dry-run=no",
             f"--key-file={keyfile}",
-            args.device,
+            device,
         ],
         check=True,
         # composefs verifies the deployment with fs-verity, and repart does not
@@ -126,8 +134,8 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
     )
     subprocess.run(["udevadm", "settle"], check=True)
 
-    esp = partition_of_type(args.device, ESP_TYPE)
-    root = partition_of_type(args.device, ROOT_TYPE)
+    esp = partition_of_type(device, ESP_TYPE)
+    root = partition_of_type(device, ROOT_TYPE)
 
     print(f"Unlocking {root}")
     subprocess.run(
@@ -137,23 +145,23 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
     subprocess.run(["mount", f"/dev/mapper/{MAPPING}", target], check=True)
 
     extra: list[str] = []
-    if args.target_imgref:
-        extra.append(f"--target-imgref={args.target_imgref}")
-    elif not args.source_imgref.startswith(("docker://", "registry:")):
+    if target_imgref:
+        extra.append(f"--target-imgref={target_imgref}")
+    elif not source_imgref.startswith(("docker://", "registry:")):
         print(
             "Warning: no target_imgref and source_imgref is not a registry "
             "reference, so the installed system will have no usable update source.",
             file=sys.stderr,
         )
 
-    print(f"Installing {args.source_imgref}")
+    print(f"Installing {source_imgref}")
     subprocess.run(
         [
             "bootc",
             "install",
             "to-filesystem",
             "--composefs-backend",
-            f"--source-imgref={args.source_imgref}",
+            f"--source-imgref={source_imgref}",
             "--skip-fetch-check",
             *extra,
             target,
@@ -168,7 +176,10 @@ def install(args: argparse.Namespace, keyfile: Path, target: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    resolve_imgrefs(args)
+    source_imgref, target_imgref = resolve_imgrefs(
+        args.source_imgref,
+        args.target_imgref,
+    )
 
     if os.geteuid() != 0:
         sys.exit("This script must run as root.")
@@ -195,7 +206,7 @@ def main() -> None:
         target = Path(tmp) / "target"
         target.mkdir()
         try:
-            install(args, keyfile, target)
+            install(args.device, source_imgref, target_imgref, keyfile, target)
         finally:
             subprocess.run(["umount", "--recursive", target], check=False)
             subprocess.run(["cryptsetup", "close", MAPPING], check=False)
