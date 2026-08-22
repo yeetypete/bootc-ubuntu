@@ -9,7 +9,7 @@ esp=/esp.img
 echo "Squashing rootfs"
 mkdir -p /iso/LiveOS /out
 mksquashfs /rootfs /iso/LiveOS/squashfs.img \
-    -noappend -no-progress -comp zstd -Xcompression-level 19
+    -noappend -no-progress -comp zstd
 
 # Firmware loads the UKI directly. The ESP carries no bootloader and the ISO
 # no boot entries. It has to live here rather than on the ISO filesystem because
