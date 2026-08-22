@@ -1,0 +1,122 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Run pre-commit hooks
+        uses: j178/prek-action@5337cb91e0fa35a7ff31b9ca345126d8bbbcdf16 # v2
+
+  build:
+    name: build
+    needs: pre-commit
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    env:
+      # A release is identified by its tag, every other build by the commit it
+      # was built from. On a pull request that is its head, not the merge commit.
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.pull_request.head.sha || github.sha }}
+      REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      CACHE_REPO: docker.io/yeetypete/bootc-ubuntu-cache
+    steps:
+      - name: Free disk space
+        run: |
+          shopt -s dotglob
+          sudo rm -rf /usr/local/lib/android/* &
+          sudo rm -rf /opt/hostedtoolcache/* &
+          sudo rm -rf /usr/share/dotnet/* &
+          sudo rm -rf /opt/ghc/* /usr/local/.ghcup/* /usr/share/swift/* &
+          sudo docker image prune --all --force &
+          wait
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" |
+            podman login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Build image and live ISO
+        run: |
+          just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
+            revision="$REVISION" dist
+
+      - name: Push image
+        env:
+          RECIPE: ${{ github.ref_type == 'tag' && 'push-release' || 'push' }}
+        run: just version="${VERSION#v}" revision="$REVISION" "$RECIPE"
+
+      - name: Upload live ISO
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: live-iso
+          path: |
+            *.iso
+            *.iso.sha256
+          if-no-files-found: error
+          retention-days: 5
+          # The ISO is a compressed squashfs already, so zipping it only costs time.
+          compression-level: 0
+
+  release:
+    name: release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download live ISO
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: live-iso
+          path: live-iso
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            live-iso/*
