@@ -59,6 +59,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     binutils \
     bubblewrap \
+    ca-certificates \
     composefs \
     cryptsetup-bin \
     dmsetup \
