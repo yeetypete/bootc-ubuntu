@@ -51,7 +51,7 @@ jobs:
           sudo rm -rf /opt/ghc/* /usr/local/.ghcup/* /usr/share/swift/* &
           sudo docker image prune --all --force &
           wait
-          df -h / /mnt
+          df -h /
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -60,17 +60,6 @@ jobs:
 
       - name: Install just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
-
-      - name: Put container storage on scratch disk
-        run: |
-          sudo install -d -o "$USER" /mnt/containers /mnt/tmp
-          mkdir -p ~/.config/containers
-          printf '[storage]\ndriver = "overlay"\ngraphroot = "/mnt/containers"\n' \
-            > ~/.config/containers/storage.conf
-          # Each layer is written through TMPDIR, which defaults to /var/tmp
-          # on the small disk.
-          echo "TMPDIR=/mnt/tmp" >> "$GITHUB_ENV"
-          podman info --format 'podman {{ .Version.Version }} storing images in {{ .Store.GraphRoot }}'
 
       - name: Log in to Docker Hub
         env:
