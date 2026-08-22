@@ -1,0 +1,14 @@
+Explanation: Applications should come from Flathub instead.
+Package: firefox gnome-software-plugin-snap snapd
+Pin: release *
+Pin-Priority: -1
+
+Explanation: Provisioning is done by systemd-sysusers and GNOME Initial Setup.
+Package: cloud-init cloud-init-base
+Pin: release *
+Pin-Priority: -1
+
+Explanation: journald already covers this, and apt cannot write to /usr.
+Package: kdump-tools rsyslog unattended-upgrades whoopsie
+Pin: release *
+Pin-Priority: -1

@@ -39,12 +39,7 @@ FROM ubuntu:26.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# bootc requires dracut, so keep initramfs-tools out.
-COPY <<EOF /etc/apt/preferences.d/no-initramfs-tools
-Package: initramfs-tools*
-Pin: release *
-Pin-Priority: -1
-EOF
+COPY rootfs/etc/apt/preferences.d/no-initramfs-tools /etc/apt/preferences.d/
 
 # Staged before the kernel so /usr/lib/kernel/install.conf is in place and
 # kernel-install defers to bootc instead of generating an initramfs itself.
@@ -68,12 +63,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     e2fsprogs \
     efibootmgr \
     fdisk \
+    firmware-sof-signed \
     less \
     linux-firmware \
     linux-image-generic \
     network-manager \
+    nftables \
     openssh-server \
     ostree \
+    passt \
     podman \
     skopeo \
     systemd \
@@ -83,6 +81,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     systemd-resolved \
     systemd-timesyncd \
     tpm2-tools \
+    uidmap \
+    wpasupplicant \
     zstd
 
 # Must land after apt: these tmpfiles.d rules retarget /var/lib/dpkg, which
@@ -122,17 +122,22 @@ RUN systemctl enable \
 
 FROM base AS desktop
 
+# NOTE: We install with recommended dependencies to get a more complete desktop experience.
+# hadolint ignore=DL3015
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install --no-install-recommends -y \
-    gdm3 \
-    gnome-initial-setup \
-    gnome-shell \
-    ptyxis \
-    ubuntu-minimal \
-    ubuntu-session
+    apt-get update && apt-get install -y \
+    flatpak \
+    logrotate \
+    ubuntu-desktop-minimal \
+    ubuntu-minimal
 
-RUN systemctl enable gdm.service
+# PackageKit installs debs into /usr, which is read-only. Its offline-update
+# unit would try to do this at boot, so mask it.
+RUN systemctl enable gdm.service && \
+    systemctl mask \
+    packagekit-offline-update.service \
+    packagekit.service
 
 
 FROM desktop AS rootfs
