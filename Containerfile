@@ -196,7 +196,7 @@ RUN bootc container lint --fatal-warnings
 
 # Move vmlinuz and initramfs.img out of /usr/lib/modules, so that the image does
 # not contain a second copy of what the UKI embeds.
-FROM rootfs AS split
+FROM rootfs AS kernel-split
 
 RUN mkdir /kernel && \
     bootc container split-kernel-and-rootfs --rootfs / --output /kernel
@@ -210,8 +210,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     systemd-boot-efi \
     systemd-ukify
 
-RUN --mount=type=bind,from=split,target=/target \
-    --mount=type=bind,from=split,source=/kernel,target=/kernel \
+RUN --mount=type=bind,from=kernel-split,target=/target \
+    --mount=type=bind,from=kernel-split,source=/kernel,target=/kernel \
     kver="$(basename "$(echo /kernel/*)")" && \
     mkdir -p /uki && \
     "${DESTDIR}/usr/bin/bootc" container ukify \
@@ -219,7 +219,7 @@ RUN --mount=type=bind,from=split,target=/target \
       -- --output "/uki/${kver}.efi"
 
 
-FROM split AS image
+FROM kernel-split AS image
 
 COPY --from=uki /uki/*.efi /boot/EFI/Linux/
 
@@ -241,6 +241,11 @@ RUN mkdir -p /var/tmp /var/roothome && \
       --kver "${kver}" /live.efi
 
 
+FROM kernel-split AS live-rootfs
+
+COPY live/overlay/ /
+
+
 FROM ubuntu:26.04 AS iso
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -258,18 +263,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     squashfs-tools \
     xorriso
 
-COPY --from=split / /rootfs/
-# Live-only files, which exist on the ISO and never on an installed system.
-COPY live/overlay/ /rootfs/
 COPY --from=live-uki /live.efi /live.efi
-# The image and where it updates from. An ISO installation needs no network.
-# hadolint ignore=DL3022
-COPY --from=oci image.oci /iso/image.oci
 RUN : "${IMAGE_REF:?no registry reference to record on the ISO}" && \
-    echo "${IMAGE_REF}" > /iso/image.ref
+    mkdir -p /iso && echo "${IMAGE_REF}" > /iso/image.ref
 
 COPY live/build-iso.sh /usr/local/bin/build-iso
-RUN ISO_LABEL="${ISO_LABEL}" ISO_NAME="${ISO_NAME}" build-iso
+# hadolint ignore=DL3022
+RUN --mount=type=bind,from=live-rootfs,target=/rootfs \
+    --mount=type=bind,from=oci,source=image.oci,target=/iso/image.oci \
+    ISO_LABEL="${ISO_LABEL}" ISO_NAME="${ISO_NAME}" build-iso
 
 
 FROM scratch AS iso-out
