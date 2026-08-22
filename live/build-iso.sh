@@ -25,3 +25,5 @@ xorriso -as mkisofs -R -J -V "$label" \
     -append_partition 2 c12a7328-f81f-11d2-ba4b-00a0c93ec93b "$esp" \
     -e --interval:appended_partition_2:all:: -no-emul-boot \
     -iso-level 3 -o "/out/$name.iso" /iso
+
+rm -rf /iso/LiveOS "$esp" /live.efi
