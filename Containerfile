@@ -267,15 +267,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     squashfs-tools \
     xorriso
 
-COPY --from=live-uki /live.efi /live.efi
-RUN : "${IMAGE_REF:?no registry reference to record on the ISO}" && \
-    mkdir -p /iso && echo "${IMAGE_REF}" > /iso/image.ref
-
-COPY live/build-iso.sh /usr/local/bin/build-iso
 # hadolint ignore=DL3022
 RUN --mount=type=bind,from=live-rootfs,target=/rootfs \
+    --mount=type=bind,from=live-uki,source=/live.efi,target=/live.efi \
+    --mount=type=bind,source=live/build-iso.sh,target=/usr/local/bin/build-iso \
     --mount=type=bind,from=oci,source=image.oci,target=/iso/image.oci \
-    ISO_LABEL="${ISO_LABEL}" ISO_NAME="${ISO_NAME}" build-iso
+    build-iso "/out/${ISO_NAME}.iso"
 
 
 FROM scratch AS iso-out
