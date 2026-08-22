@@ -98,8 +98,9 @@ def parse_args() -> argparse.Namespace:
         "--reboot",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Reboot once the installation finishes. An installation from the live media "
-        "asks by default. Anywhere else it defaults to not rebooting.",
+        help="Reboot once the installation finishes. An installation from the "
+        "live media asks on a terminal and reboots without one. Anywhere else "
+        "it defaults to not rebooting.",
     )
     return parser.parse_args()
 
@@ -183,11 +184,13 @@ def install(
 
 
 def should_reboot(explicit: bool | None) -> bool:
-    """Offer to reboot, as an interactive install from the live media."""
+    """Finish an installation from the live media by rebooting."""
     if explicit is not None:
         return explicit
-    if not (LIVE_MEDIA.is_dir() and sys.stdin.isatty()):
+    if not LIVE_MEDIA.is_dir():
         return False
+    if not sys.stdin.isatty():
+        return True
     return input("\nReboot now? [Y/n] ").strip().lower() in ("", "y", "yes")
 
 
