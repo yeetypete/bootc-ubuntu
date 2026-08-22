@@ -52,12 +52,11 @@ COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
 # The stock kernel already carries FS_VERITY=y and EROFS_FS=m, which the composefs
 # backend needs at boot.
 #
-# NOTE: binutils and bubblewrap are required by bcvk VM tests only.
+# NOTE: binutils is required by bcvk VM tests only.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     binutils \
-    bubblewrap \
     ca-certificates \
     composefs \
     cryptsetup-bin \
@@ -104,13 +103,6 @@ RUN ldconfig
 RUN userdel ubuntu && \
     pam-auth-update --enable mkhomedir
 
-# Workaround: Ubuntu 25.04 and newer load the bwrap-userns-restrict AppArmor
-# profile, which denies all capabilities to children of /usr/bin/bwrap. bcvk runs
-# qemu and virtiofsd there, so its VMs never finish booting. Move the binary off
-# the matched path to avoid the profile.
-RUN mv /usr/bin/bwrap /usr/libexec/bwrap && \
-    ln -s ../libexec/bwrap /usr/bin/bwrap
-
 RUN systemctl enable \
     NetworkManager.service \
     ssh.service \
@@ -132,13 +124,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
     flatpak \
+    gnome-software-plugin-flatpak \
     logrotate \
     ubuntu-desktop-minimal \
     ubuntu-minimal
 
+# Preconfigure Flathub, where applications come from. `flatpak remote-add` would
+# write to /var/lib/flatpak, which the rootfs stage empties, so ship the remote as
+# a flatpakrepo file in /usr instead.
+ADD --chmod=644 https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
+
 # PackageKit installs debs into /usr, which is read-only. Its offline-update
 # unit would try to do this at boot, so mask it.
-RUN systemctl enable gdm.service && \
+RUN systemctl enable \
+    flatpak-system-init.service \
+    gdm.service && \
     systemctl mask \
     packagekit-offline-update.service \
     packagekit.service
