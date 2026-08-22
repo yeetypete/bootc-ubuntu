@@ -49,8 +49,13 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache/* &
           sudo rm -rf /usr/share/dotnet/* &
           sudo rm -rf /opt/ghc/* /usr/local/.ghcup/* /usr/share/swift/* &
+          sudo rm -rf /usr/share/miniconda/* /usr/local/share/powershell/* &
+          sudo rm -rf /usr/local/lib/node_modules/* /opt/az/* &
           sudo docker image prune --all --force &
           wait
+          sudo apt-get purge --yes --auto-remove '^mysql-.*' azure-cli \
+            google-chrome-stable microsoft-edge-stable firefox || true
+          sudo apt-get clean
           df -h /
 
       - name: Checkout
