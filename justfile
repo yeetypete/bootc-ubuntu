@@ -41,7 +41,7 @@ default:
 # Build the bootc container image.
 [group('image')]
 build *args:
-    podman build --target image \
+    podman build --jobs 0 --target image \
         --label org.opencontainers.image.version={{ version }} \
         --label org.opencontainers.image.revision={{ revision }} \
         --tag {{ imgref }} \
@@ -53,19 +53,19 @@ build *args:
 [group('image')]
 oci: build
     rm -rf {{ oci_dir }}
-    podman push --quiet {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
+    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
 
 # Push the image to its registry under the commit it was built from.
 [group('image')]
 push: build
-    podman push {{ imgref }}-{{ revision }}
+    podman push --compression-format zstd --force-compression {{ imgref }}-{{ revision }}
 
 # Publish a tagged release.
 [group('image')]
 push-release: push
     podman tag {{ imgref }}-{{ revision }} {{ imgref }}-{{ version }}
-    podman push {{ imgref }}-{{ version }}
-    podman push {{ imgref }}
+    podman push --compression-format zstd --force-compression {{ imgref }}-{{ version }}
+    podman push --compression-format zstd --force-compression {{ imgref }}
 
 # Print the credentials that provision NAME, one name:base64 pair per line. The
 # account lives only in what is passed in at boot, not the image.
@@ -157,7 +157,7 @@ live *args: oci
     mkdir .live
     trap 'rm -rf .live' EXIT
     cp -al {{ oci_dir }} .live/image.oci
-    podman build --target iso-out \
+    podman build --jobs 0 --target iso-out \
         --build-context oci=.live \
         --build-arg ISO_NAME={{ name }} \
         --build-arg IMAGE_REF={{ imgref }} \
