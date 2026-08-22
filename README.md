@@ -38,7 +38,7 @@ connection.
 To install, write the ISO to a USB device:
 
 ```bash
-sudo cp bootc-ubuntu.iso /dev/sdX && sync  # The device itself, not a partition.
+sudo cp bootc-ubuntu.iso /dev/sdX && sync
 ```
 
 Boot the device, then follow the prompt. The live session lists the disks it
