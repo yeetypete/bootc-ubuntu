@@ -234,8 +234,10 @@ def main() -> None:
     if should_reboot(args.reboot):
         print("Remove the installation medium. Rebooting.")
         subprocess.run(["systemctl", "reboot"], check=True)
-    else:
+    elif LIVE_MEDIA.is_dir():
         print("\nRemove the installation medium and reboot into the new system.")
+    else:
+        print(f"\nBoot {args.device} to start the new system.")
 
 
 if __name__ == "__main__":
