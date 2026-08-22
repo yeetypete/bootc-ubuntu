@@ -1,0 +1,4 @@
+Explanation: bootc uses dracut instead of initramfs-tools to generate initramfs images.
+Package: initramfs-tools*
+Pin: release *
+Pin-Priority: -1
