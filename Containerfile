@@ -41,6 +41,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 COPY rootfs/etc/apt/preferences.d/no-initramfs-tools /etc/apt/preferences.d/
 
+# Staged before the kernel so the trigger is disabled before any package can
+# activate it.
+COPY rootfs/etc/initramfs-tools/update-initramfs.conf /etc/initramfs-tools/
+
 # Staged before the kernel so /usr/lib/kernel/install.conf is in place and
 # kernel-install defers to bootc instead of generating an initramfs itself.
 COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
