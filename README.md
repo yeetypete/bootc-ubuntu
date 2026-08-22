@@ -15,8 +15,6 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 - `bootc` with the [composefs backend](https://bootc.dev/bootc/experimental-composefs.html)
   enabled for image storage and deployment, giving a read-only root filesystem
   verified with `fs-verity`.
-- A transient root filesystem: writes to `/` land in a tmpfs overlay and are
-  discarded on reboot. `/etc` and `/var` stay persistent.
 - A [unified kernel image](https://uapi-group.org/specifications/specs/unified_kernel_image/)
   that boots only the root filesystem it was built with, and aborts if those
   contents have changed.
