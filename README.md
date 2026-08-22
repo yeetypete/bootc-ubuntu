@@ -49,7 +49,8 @@ writes anything:
 bootc-ubuntu-install /dev/nvme0n1  # The disk to install to, wiped.
 ```
 
-Reboot when it finishes and go through GNOME's initial setup.
+The installer then offers to reboot. Remove the installation medium at the
+prompt, and go through GNOME's initial setup after the reboot.
 
 To unlock with the TPM instead of a passphrase, enroll one afterwards with
 [`systemd-cryptenroll`](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html).

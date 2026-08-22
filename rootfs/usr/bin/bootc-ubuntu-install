@@ -34,8 +34,9 @@ MAPPING = "bootc-ubuntu-root"
 
 # dracut's dmsquash-live mounts the ISO here, so this is where an install off
 # the live media finds the image and the registry it updates from.
-LIVE_OCI = Path("/run/initramfs/live/image.oci")
-LIVE_IMGREF = Path("/run/initramfs/live/image.ref")
+LIVE_MEDIA = Path("/run/initramfs/live")
+LIVE_OCI = LIVE_MEDIA / "image.oci"
+LIVE_IMGREF = LIVE_MEDIA / "image.ref"
 
 # bootc stages the source image here, and containers/image hardcodes the path
 # rather than honouring TMPDIR.
@@ -92,6 +93,14 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         help="Registry reference the installed system fetches updates from, such "
         "as docker.io/example/bootc-ubuntu:26.04.",
+    )
+    parser.add_argument(
+        "--reboot",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reboot once the installation finishes. An installation from the "
+        "live media asks on a terminal and reboots without one. Anywhere else "
+        "it defaults to not rebooting.",
     )
     return parser.parse_args()
 
@@ -174,6 +183,17 @@ def install(
     print(f"  systemd-cryptenroll --tpm2-device=auto {root}.")
 
 
+def should_reboot(explicit: bool | None) -> bool:
+    """Finish an installation from the live media by rebooting."""
+    if explicit is not None:
+        return explicit
+    if not LIVE_MEDIA.is_dir():
+        return False
+    if not sys.stdin.isatty():
+        return True
+    return input("\nReboot now? [Y/n] ").strip().lower() in ("", "y", "yes")
+
+
 def main() -> None:
     args = parse_args()
     source_imgref, target_imgref = resolve_imgrefs(
@@ -210,6 +230,14 @@ def main() -> None:
         finally:
             subprocess.run(["umount", "--recursive", target], check=False)
             subprocess.run(["cryptsetup", "close", MAPPING], check=False)
+
+    if should_reboot(args.reboot):
+        print("Remove the installation medium. Rebooting.")
+        subprocess.run(["systemctl", "reboot"], check=True)
+    elif LIVE_MEDIA.is_dir():
+        print("\nRemove the installation medium and reboot into the new system.")
+    else:
+        print(f"\nBoot {args.device} to start the new system.")
 
 
 if __name__ == "__main__":
