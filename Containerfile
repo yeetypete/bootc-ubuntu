@@ -134,14 +134,14 @@ ADD --chmod=644 https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatp
 
 COPY rootfs/usr/lib/systemd/system/flatpak-system-init.service /usr/lib/systemd/system/
 
-# PackageKit installs debs into /usr, which is read-only. Its offline-update
-# unit would try to do this at boot, so mask it.
+# PackageKit installs debs into /usr, which is read-only. Make sure it doesn't run.
 RUN systemctl enable \
     flatpak-system-init.service \
     gdm.service && \
     systemctl mask \
     packagekit-offline-update.service \
-    packagekit.service
+    packagekit.service && \
+    rm -f /usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service
 
 
 FROM desktop AS rootfs
