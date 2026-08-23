@@ -2,6 +2,7 @@
 
 # Volume label of the live ISO.
 ARG ISO_LABEL=BOOTC_UBUNTU
+ARG SOURCE_DATE_EPOCH=0
 
 FROM ubuntu:26.04 AS bootc-builder
 
@@ -290,6 +291,7 @@ ARG ISO_LABEL
 ARG ISO_NAME
 # Registry the installed system fetches updates from, recorded on the ISO.
 ARG IMAGE_REF
+ARG SOURCE_DATE_EPOCH
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \

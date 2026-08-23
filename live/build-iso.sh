@@ -23,11 +23,14 @@ mcopy -i "$esp" /live.efi ::/EFI/BOOT/BOOTX64.EFI
 # Registry the installed system fetches its updates from.
 echo "$imgref" > /iso/image.ref
 
+# SOURCE_DATE_EPOCH pins the volume dates, but xorriso still records each file's
+# own mtime, so override those too.
 echo "Writing $out"
 xorriso -as mkisofs -R -V "$label" \
     -partition_offset 16 -appended_part_as_gpt \
     -append_partition 2 c12a7328-f81f-11d2-ba4b-00a0c93ec93b "$esp" \
     -e --interval:appended_partition_2:all:: -no-emul-boot \
-    -iso-level 3 -o "$out" /iso
+    -iso-level 3 -o "$out" /iso \
+    -- -alter_date_r b "=${SOURCE_DATE_EPOCH:?}" /
 
 rm -rf /iso/LiveOS "$esp"
