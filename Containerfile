@@ -39,7 +39,8 @@ FROM ubuntu:26.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-COPY rootfs/etc/apt/preferences.d/no-initramfs-tools /etc/apt/preferences.d/
+# Staged before any apt install so the specified pins apply to it.
+COPY rootfs/etc/apt/ /etc/apt/
 
 # Staged before the kernel so the trigger is disabled before any package can
 # activate it.
@@ -88,10 +89,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     wpasupplicant \
     zstd
 
-# Must land after apt: these tmpfiles.d rules retarget /var/lib/dpkg, which
-# destroys the dpkg database if a postinst applies them mid-install.
-COPY rootfs/ /
-
 # Installed after the packages so it links against the archive's libostree, and
 # before dracut so the 51bootc dracut module is available.
 COPY --from=bootc-builder /out/usr/ /usr/
@@ -134,6 +131,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # a flatpakrepo file in /usr instead.
 ADD --chmod=644 https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
+COPY rootfs/usr/lib/systemd/system/flatpak-system-init.service /usr/lib/systemd/system/
+
 # PackageKit installs debs into /usr, which is read-only. Its offline-update
 # unit would try to do this at boot, so mask it.
 RUN systemctl enable \
@@ -145,6 +144,8 @@ RUN systemctl enable \
 
 
 FROM desktop AS rootfs
+
+COPY rootfs/ /
 
 # Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
 RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
@@ -206,19 +207,20 @@ RUN mkdir /kernel && \
     bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 
-FROM bootc-builder AS uki
+# Descends from kernel-split so a rootfs change invalidates this stage.
+FROM kernel-split AS uki
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    mkdir -p /var/lib /var/log/apt /var/tmp && \
+    ln -s /usr/lib/sysimage/dpkg /var/lib/dpkg && \
     apt-get update && apt-get install --no-install-recommends -y \
-    systemd-boot-efi \
     systemd-ukify
 
 RUN --mount=type=bind,from=kernel-split,target=/target \
-    --mount=type=bind,from=kernel-split,source=/kernel,target=/kernel \
     kver="$(basename "$(echo /kernel/*)")" && \
     mkdir -p /uki && \
-    "${DESTDIR}/usr/bin/bootc" container ukify \
+    bootc container ukify \
       --rootfs /target --kernel-dir "/kernel/${kver}" \
       -- --output "/uki/${kver}.efi"
 
