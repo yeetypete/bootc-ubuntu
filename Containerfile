@@ -142,7 +142,8 @@ RUN locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8
 # Preconfigure Flathub, where applications come from. `flatpak remote-add` would
 # write to /var/lib/flatpak, which the rootfs stage empties, so ship the remote as
 # a flatpakrepo file in /usr instead.
-ADD --chmod=644 https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
+ADD --chmod=644 --checksum=sha256:3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a \
+    https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
 COPY rootfs/usr/lib/systemd/system/flatpak-system-init.service /usr/lib/systemd/system/
 
