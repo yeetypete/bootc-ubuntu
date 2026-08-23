@@ -25,7 +25,7 @@ chunkah := "quay.io/coreos/chunkah:v0.6.0"
 # Maximum number of layers chunkah packs the image into.
 max_layers := "96"
 # The rootfs as built, before chunking and sealing.
-candidate := "localhost/bootc-ubuntu-candidate:" + tag
+target := "localhost/bootc-ubuntu-target:" + tag
 # The rootfs repacked into content-based layers, which the UKI is sealed against.
 chunked := "localhost/bootc-ubuntu-chunked:" + tag
 # Firmware for the qemu recipes. Booting this image needs UEFI.
@@ -67,24 +67,24 @@ build *args:
         --label org.opencontainers.image.revision={{ revision }} \
         --timestamp 0 \
         {{ cache_args }} \
-        --tag {{ candidate }} \
+        --tag {{ target }} \
         {{ args }} .
     # chunkah only sees the mounted filesystem, so labels and annotations have to
     # be handed to it or they are lost.
-    layout=$(mktemp -d -p /var/tmp)
-    trap 'rm -rf "${layout}"' EXIT
-    config=$(podman inspect {{ candidate }})
+    work=$(mktemp -d -p /var/tmp)
+    trap 'rm -rf "${work}"' EXIT
+    config=$(podman inspect {{ target }})
     podman run --rm \
-        --mount=type=image,src={{ candidate }},dst=/chunkah \
+        --mount=type=image,src={{ target }},dst=/chunkah \
         -e CHUNKAH_CONFIG_STR="${config}" \
-        -v "${layout}:/out:z" \
+        -v "${work}:/out:z" \
         {{ chunkah }} build \
             --max-layers {{ max_layers }} \
             --source-date-epoch 0 \
             --prune /kernel \
             --tag {{ chunked }} \
-            --output oci:/out/image
-    podman pull --quiet "oci:${layout}/image:{{ chunked }}"
+            --output oci:/out/layout
+    podman pull --quiet "oci:${work}/layout:{{ chunked }}"
     podman build --jobs 0 --target image \
         --timestamp 0 \
         --build-context chunked=container-image://{{ chunked }} \
