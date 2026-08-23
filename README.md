@@ -94,6 +94,24 @@ Once installed, the system updates transactionally with `bootc upgrade`, which
 pulls a newer image and stages it as a new deployment you can roll back to if
 needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrades.html).
 
+## Installing tools transiently
+
+For tracing and debugging tools that do not belong in the image, `bootc
+usr-overlay` adds a writable overlay on `/usr` that is discarded on reboot:
+
+```bash
+sudo bootc usr-overlay
+sudo apt update && sudo apt install -y strace
+```
+
+The overlay is backed by `tmpfs`, so anything installed into it lives in RAM and
+is gone after a reboot. Note that changes under `/etc` and `/var`, which package
+installations often make, persist. `bootc config-diff` can be used to list
+what a package left behind in `/etc`. See the
+[`bootc usr-overlay` docs](https://bootc-dev.github.io/bootc/man/bootc-usr-overlay.8.html).
+
+Anything you want to keep should be later added to bootc image.
+
 ## License
 
 `bootc-ubuntu` is released under the [MIT License](LICENSE).
