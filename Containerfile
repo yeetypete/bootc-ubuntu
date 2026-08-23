@@ -53,11 +53,12 @@ COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
 # The stock kernel already carries FS_VERITY=y and EROFS_FS=m, which the composefs
 # backend needs at boot.
 #
-# NOTE: binutils is required by bcvk VM tests only.
+# NOTE: binutils and bubblewrap are required by bcvk VM tests only.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     binutils \
+    bubblewrap \
     ca-certificates \
     composefs \
     cryptsetup-bin \

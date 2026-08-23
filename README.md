@@ -26,6 +26,13 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 - Only for VM tests: [`bcvk`](https://github.com/bootc-dev/bcvk) and
   QEMU.
 
+> [!IMPORTANT]
+> On an Ubuntu 25.10 or newer host, build `bcvk` from
+> [bootc-dev/bcvk#329](https://github.com/bootc-dev/bcvk/pull/329). Ubuntu 25.10
+> and newer incldue a `bwrap-userns-restrict` AppArmor profile, which denies
+> capabilities to `bwrap`'s children, so `virtiofsd` exits at startup and the VM
+> never finishes booting. On any other host the released `bcvk` works.
+
 ## Installing
 
 ```bash
