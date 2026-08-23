@@ -206,19 +206,20 @@ RUN mkdir /kernel && \
     bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 
-FROM bootc-builder AS uki
+# Descends from kernel-split so a rootfs change invalidates this stage.
+FROM kernel-split AS uki
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    mkdir -p /var/lib /var/log/apt /var/tmp && \
+    ln -s /usr/lib/sysimage/dpkg /var/lib/dpkg && \
     apt-get update && apt-get install --no-install-recommends -y \
-    systemd-boot-efi \
     systemd-ukify
 
 RUN --mount=type=bind,from=kernel-split,target=/target \
-    --mount=type=bind,from=kernel-split,source=/kernel,target=/kernel \
     kver="$(basename "$(echo /kernel/*)")" && \
     mkdir -p /uki && \
-    "${DESTDIR}/usr/bin/bootc" container ukify \
+    bootc container ukify \
       --rootfs /target --kernel-dir "/kernel/${kver}" \
       -- --output "/uki/${kver}.efi"
 
