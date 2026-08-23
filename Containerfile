@@ -2,6 +2,8 @@
 
 # Volume label of the live ISO.
 ARG ISO_LABEL=BOOTC_UBUNTU
+# The rootfs repacked into content-based layers. See `just build`.
+ARG CHUNKED_IMAGE
 
 FROM ubuntu:26.04 AS bootc-builder
 
@@ -218,6 +220,9 @@ RUN mkdir /kernel && \
     bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 
+FROM ${CHUNKED_IMAGE} AS chunked
+
+
 # Descends from kernel-split so a rootfs change invalidates this stage.
 FROM kernel-split AS uki
 
@@ -228,7 +233,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     systemd-ukify
 
-RUN --mount=type=bind,from=kernel-split,target=/target \
+# Seal the chunked rootfs.
+RUN --mount=type=bind,from=chunked,target=/target \
     kver="$(basename "$(echo /kernel/*)")" && \
     mkdir -p /uki && \
     bootc container ukify \
@@ -236,7 +242,7 @@ RUN --mount=type=bind,from=kernel-split,target=/target \
       -- --output "/uki/${kver}.efi"
 
 
-FROM kernel-split AS image
+FROM chunked AS image
 
 COPY --from=uki /uki/*.efi /boot/EFI/Linux/
 
