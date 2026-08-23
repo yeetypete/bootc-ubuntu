@@ -81,12 +81,13 @@ build *args:
         {{ chunkah }} build \
             --max-layers {{ max_layers }} \
             --source-date-epoch 0 \
+            --prune /kernel \
             --tag {{ chunked }} \
             --output oci:/out/image
     podman pull --quiet "oci:${layout}/image:{{ chunked }}"
     podman build --jobs 0 --target image \
         --timestamp 0 \
-        --build-arg CHUNKED_IMAGE={{ chunked }} \
+        --build-context chunked=container-image://{{ chunked }} \
         {{ created_args }} \
         --tag {{ imgref }} \
         --tag {{ imgref }}-{{ revision }} \
