@@ -23,7 +23,7 @@ created_args := if created == "" { "" } else { "--annotation org.opencontainers.
 # layers so that an update ships only the packages that changed.
 chunkah := "quay.io/coreos/chunkah:v0.6.0"
 # Maximum number of layers chunkah packs the image into.
-max_layers := "96"
+max_layers := "128"
 # The rootfs as built, before chunking and sealing.
 target := "localhost/bootc-ubuntu-target:" + tag
 # The rootfs repacked into content-based layers, which the UKI is sealed against.
@@ -88,6 +88,7 @@ build *args:
     podman build --jobs 0 --target image \
         --timestamp 0 \
         --build-context chunked=container-image://{{ chunked }} \
+        {{ cache_args }} \
         {{ created_args }} \
         --tag {{ imgref }} \
         --tag {{ imgref }}-{{ revision }} \
