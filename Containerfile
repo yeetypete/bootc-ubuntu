@@ -25,13 +25,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     pkg-config \
     rustc
 
+# bootc's release profile keeps debug info, expecting RPM split-debuginfo
+# packaging we do not have. Apply its own [profile.thin] settings manually.
+ENV CARGO_PROFILE_RELEASE_DEBUG=false \
+    CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_PROFILE_RELEASE_LTO=true \
+    CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+
 WORKDIR /bootc
+
+RUN git clone --depth 1 --branch "${BOOTC_VERSION}" "${BOOTC_REPO}" .
+
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/bootc/target,sharing=locked \
-    git init && \
-    git remote add origin "${BOOTC_REPO}" && \
-    git fetch --depth 1 origin "${BOOTC_VERSION}" && \
-    git checkout FETCH_HEAD && \
     make bin install DESTDIR="${DESTDIR}"
 
 
@@ -78,6 +85,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ostree \
     passt \
     podman \
+    python3 \
     skopeo \
     systemd \
     systemd-boot \
@@ -170,6 +178,15 @@ RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
     ln -s sysroot/ostree /ostree && \
     rm -f /etc/fstab
 
+# Label paths with the source package that owns them, so that chunkah splits the
+# image into content-based layers rather than shipping one layer per build stage.
+# Must run after the last package is installed and before chunkah repacks.
+#
+# TODO: switch to chunkah's native dpkg backend and drop this step once
+# https://github.com/coreos/chunkah/issues/155 lands.
+RUN --mount=type=bind,source=tools/label_components.py,target=/label-components \
+    /label-components /var/lib/dpkg
+
 # Relocate the dpkg database to /usr so it persists across image updates (/var is
 # only applied at first provisioning). A tmpfiles.d symlink restores /var/lib/dpkg.
 RUN mkdir -p /usr/lib/sysimage && \
@@ -208,7 +225,7 @@ RUN mkdir /kernel && \
     bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 
-# Descends from kernel-split so a rootfs change invalidates this stage.
+# Descends from kernel-split for /kernel, so a rootfs change rebuilds the UKI.
 FROM kernel-split AS uki
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -218,7 +235,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     systemd-ukify
 
-RUN --mount=type=bind,from=kernel-split,target=/target \
+# Seal against the chunked rootfs rather than this stage's own, because chunkah
+# rewrites the file mtimes that the composefs digest covers.
+RUN --mount=type=bind,from=chunked,target=/target \
     kver="$(basename "$(echo /kernel/*)")" && \
     mkdir -p /uki && \
     bootc container ukify \
@@ -226,7 +245,9 @@ RUN --mount=type=bind,from=kernel-split,target=/target \
       -- --output "/uki/${kver}.efi"
 
 
-FROM kernel-split AS image
+# chunked is a named build context supplied by `just build`, not an image name.
+# hadolint ignore=DL3006
+FROM chunked AS image
 
 COPY --from=uki /uki/*.efi /boot/EFI/Linux/
 

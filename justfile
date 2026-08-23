@@ -6,6 +6,8 @@ image := "yeetypete/bootc-ubuntu"
 version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
+# Commit date, recorded as the image creation annotation.
+created := `git log -1 --pretty=%cI 2>/dev/null || echo ""`
 # Tag the image is built with.
 tag := "26.04"
 # Registry repository holding the layer cache, e.g. docker.io/yeetypete/bootc-ubuntu-cache.
@@ -16,6 +18,16 @@ oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
 imgref := "docker.io/" + image + ":" + tag
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
+created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
+# Container image providing chunkah, which repacks the image into content-based
+# layers so that an update ships only the packages that changed.
+chunkah := "quay.io/coreos/chunkah:v0.6.0"
+# Maximum number of layers chunkah packs the image into.
+max_layers := "128"
+# The rootfs as built, before chunking and sealing.
+target := "localhost/bootc-ubuntu-target:" + tag
+# The rootfs repacked into content-based layers, which the UKI is sealed against.
+chunked := "localhost/bootc-ubuntu-chunked:" + tag
 # Firmware for the qemu recipes. Booting this image needs UEFI.
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
@@ -38,15 +50,48 @@ graphics := if display == "none" { "-nographic" } else { "-vga none -device virt
 default:
     @just --list
 
-# Build the bootc container image.
+# Build the bootc container image in three steps:
+#
+# 1. Build the rootfs.
+# 2. Repack it into content-based layers.
+# 3. Seal the repacked rootfs into the UKI and assemble the final image.
+#
+# chunkah runs before the UKI is sealed because it rewrites the file mtimes that
+# the sealed composefs digest covers.
 [group('image')]
 build *args:
-    podman build --jobs 0 --target image \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    podman build --jobs 0 --target kernel-split \
         --label org.opencontainers.image.version={{ version }} \
         --label org.opencontainers.image.revision={{ revision }} \
+        --timestamp 0 \
+        {{ cache_args }} \
+        --tag {{ target }} \
+        {{ args }} .
+    # chunkah only sees the mounted filesystem, so labels and annotations have to
+    # be handed to it or they are lost.
+    work=$(mktemp -d -p /var/tmp)
+    trap 'rm -rf "${work}"' EXIT
+    config=$(podman inspect {{ target }})
+    podman run --rm \
+        --mount=type=image,src={{ target }},dst=/chunkah \
+        -e CHUNKAH_CONFIG_STR="${config}" \
+        -v "${work}:/out:z" \
+        {{ chunkah }} build \
+            --max-layers {{ max_layers }} \
+            --source-date-epoch 0 \
+            --prune /kernel \
+            --tag {{ chunked }} \
+            --output oci:/out/layout
+    podman pull --quiet "oci:${work}/layout:{{ chunked }}"
+    podman build --jobs 0 --target image \
+        --timestamp 0 \
+        --build-context chunked=container-image://{{ chunked }} \
+        {{ cache_args }} \
+        {{ created_args }} \
         --tag {{ imgref }} \
         --tag {{ imgref }}-{{ revision }} \
-        {{ cache_args }} \
         {{ args }} .
 
 # Export the bootc container image as an OCI directory.
@@ -158,6 +203,7 @@ live *args: oci
     trap 'rm -rf .live' EXIT
     cp -al {{ oci_dir }} .live/image.oci
     podman build --jobs 0 --target iso-out \
+        --timestamp 0 \
         --build-context oci=.live \
         --build-arg ISO_NAME={{ name }} \
         --build-arg IMAGE_REF={{ imgref }} \
