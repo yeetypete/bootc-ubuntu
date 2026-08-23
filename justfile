@@ -6,6 +6,8 @@ image := "yeetypete/bootc-ubuntu"
 version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
+# Commit date, recorded as the image creation annotation.
+created := `git log -1 --pretty=%cI 2>/dev/null || echo ""`
 # Tag the image is built with.
 tag := "26.04"
 # Registry repository holding the layer cache, e.g. docker.io/yeetypete/bootc-ubuntu-cache.
@@ -16,6 +18,7 @@ oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
 imgref := "docker.io/" + image + ":" + tag
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
+created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
 # Firmware for the qemu recipes. Booting this image needs UEFI.
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
@@ -46,6 +49,8 @@ build *args:
         --label org.opencontainers.image.revision={{ revision }} \
         --tag {{ imgref }} \
         --tag {{ imgref }}-{{ revision }} \
+        --timestamp 0 \
+        {{ created_args }} \
         {{ cache_args }} \
         {{ args }} .
 
@@ -158,6 +163,7 @@ live *args: oci
     trap 'rm -rf .live' EXIT
     cp -al {{ oci_dir }} .live/image.oci
     podman build --jobs 0 --target iso-out \
+        --timestamp 0 \
         --build-context oci=.live \
         --build-arg ISO_NAME={{ name }} \
         --build-arg IMAGE_REF={{ imgref }} \
