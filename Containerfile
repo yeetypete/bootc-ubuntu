@@ -178,9 +178,9 @@ RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
     ln -s sysroot/ostree /ostree && \
     rm -f /etc/fstab
 
-# Label files with the source package that owns them, so that chunkah splits the
+# Label paths with the source package that owns them, so that chunkah splits the
 # image into content-based layers rather than shipping one layer per build stage.
-# Runs while the dpkg database is still at its default location.
+# Must run after the last package is installed and before chunkah repacks.
 #
 # TODO: switch to chunkah's native dpkg backend and drop this step once
 # https://github.com/coreos/chunkah/issues/155 lands.
@@ -225,7 +225,7 @@ RUN mkdir /kernel && \
     bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 
-# Descends from kernel-split so a rootfs change invalidates this stage.
+# Descends from kernel-split for /kernel, so a rootfs change rebuilds the UKI.
 FROM kernel-split AS uki
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -235,7 +235,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     systemd-ukify
 
-# Seal the chunked rootfs.
+# Seal against the chunked rootfs rather than this stage's own, because chunkah
+# rewrites the file mtimes that the composefs digest covers.
 RUN --mount=type=bind,from=chunked,target=/target \
     kver="$(basename "$(echo /kernel/*)")" && \
     mkdir -p /uki && \
