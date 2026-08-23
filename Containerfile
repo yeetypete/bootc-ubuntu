@@ -78,6 +78,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ostree \
     passt \
     podman \
+    python3 \
     skopeo \
     systemd \
     systemd-boot \
@@ -169,6 +170,15 @@ RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
     ln -s /var/mnt /mnt && \
     ln -s sysroot/ostree /ostree && \
     rm -f /etc/fstab
+
+# Label files with the source package that owns them, so that chunkah splits the
+# image into content-based layers rather than shipping one layer per build stage.
+# Runs while the dpkg database is still at its default location.
+#
+# TODO: switch to chunkah's native dpkg backend and drop this step once
+# https://github.com/coreos/chunkah/issues/155 lands.
+RUN --mount=type=bind,source=tools/label_components.py,target=/label-components \
+    /label-components /var/lib/dpkg
 
 # Relocate the dpkg database to /usr so it persists across image updates (/var is
 # only applied at first provisioning). A tmpfiles.d symlink restores /var/lib/dpkg.
