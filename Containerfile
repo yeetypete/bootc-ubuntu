@@ -203,6 +203,11 @@ RUN : > /etc/machine-id
 # keys openssh-server's postinstall hook generates at build time.
 RUN rm -f /etc/ssh/ssh_host_*
 
+# Let ssl-cert.service generate a unique per-machine snakeoil keypair on first
+# boot. Delete the keypair ssl-cert's postinstall hook generates at build time.
+RUN find /etc/ssl/certs -lname ssl-cert-snakeoil.pem -delete && \
+    rm -f /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key
+
 # Drop the empty /etc/resolv.conf the base image ships, so that systemd's stock
 # tmpfiles rule can symlink it to the resolved stub at boot.
 RUN --network=none rm -f /etc/resolv.conf

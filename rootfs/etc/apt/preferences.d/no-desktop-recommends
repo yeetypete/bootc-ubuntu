@@ -12,3 +12,8 @@ Explanation: journald already covers this, and apt cannot write to /usr.
 Package: kdump-tools rsyslog unattended-upgrades whoopsie
 Pin: release *
 Pin-Priority: -1
+
+Explanation: The brltty postinstall bakes a per-machine BrlAPI key into the image.
+Package: brltty
+Pin: release *
+Pin-Priority: -1
