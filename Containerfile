@@ -25,13 +25,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     pkg-config \
     rustc
 
+# bootc's release profile keeps debug info, expecting RPM split-debuginfo
+# packaging we do not have. Apply its own [profile.thin] settings manually.
+ENV CARGO_PROFILE_RELEASE_DEBUG=false \
+    CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_PROFILE_RELEASE_LTO=true \
+    CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+
 WORKDIR /bootc
+
+RUN git clone --depth 1 --branch "${BOOTC_VERSION}" "${BOOTC_REPO}" .
+
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/bootc/target,sharing=locked \
-    git init && \
-    git remote add origin "${BOOTC_REPO}" && \
-    git fetch --depth 1 origin "${BOOTC_VERSION}" && \
-    git checkout FETCH_HEAD && \
     make bin install DESTDIR="${DESTDIR}"
 
 
