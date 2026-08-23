@@ -23,6 +23,7 @@ class LabelCounts(NamedTuple):
     files: int
     unclaimed_symlinks: int
     broken_hardlinks: int
+    broken_hardlink_bytes: int
 
 
 COMPONENT_XATTR = "user.component"
@@ -125,7 +126,7 @@ def apply_labels(owners: Owners, components: Components) -> LabelCounts:
     for directory, source in components.items():
         os.setxattr(directory, COMPONENT_XATTR, source.encode())
 
-    files = symlinks = hardlinks = 0
+    files = symlinks = hardlinks = unshared = 0
     for path, source in owners.items():
         if any(d in components for d in PurePosixPath(path).parents):
             continue
@@ -135,10 +136,13 @@ def apply_labels(owners: Owners, components: Components) -> LabelCounts:
             symlinks += 1
             continue
         if info.st_nlink > 1:
+            # Copying the file out of its layer breaks the link, which costs
+            # a duplicate of its contents.
             hardlinks += 1
+            unshared += info.st_size
         os.setxattr(path, COMPONENT_XATTR, source.encode())
         files += 1
-    return LabelCounts(files, symlinks, hardlinks)
+    return LabelCounts(files, symlinks, hardlinks, unshared)
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,7 +166,7 @@ def main() -> int:
         )
 
     components = wholly_owned_dirs(owners)
-    files, symlinks, hardlinks = apply_labels(owners, components)
+    files, symlinks, hardlinks, unshared = apply_labels(owners, components)
     if not components and not files:
         print(f"Nothing to label under {admindir}.", file=sys.stderr)
         return 1
@@ -174,7 +178,8 @@ def main() -> int:
     if symlinks:
         print(f"{symlinks} unclaimed symlinks have no labelled directory above them.")
     if hardlinks:
-        print(f"{hardlinks} hardlinked files no longer share an inode.")
+        mib = unshared / 1024**2
+        print(f"{hardlinks} hardlinked files ({mib:.0f} MiB) no longer share inodes.")
     return 0
 
 
