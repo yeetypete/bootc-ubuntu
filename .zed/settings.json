@@ -1,0 +1,25 @@
+{
+  "languages": {
+    "Python": {
+      "language_servers": [
+        "pyrefly",
+        "!basedpyright",
+        "!pylsp",
+        "!pyright",
+        "!ty",
+        "..."
+      ]
+    }
+  },
+  "lsp": {
+    "pyrefly": {
+      "settings": {
+        "python": {
+          "pyrefly": {
+            "displayTypeErrors": "force-on"
+          }
+        }
+      }
+    }
+  }
+}
