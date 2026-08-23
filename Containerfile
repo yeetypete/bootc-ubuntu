@@ -135,6 +135,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ubuntu-desktop-minimal \
     ubuntu-minimal
 
+# The ubuntu base image ships no generated locales.
+RUN locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8
+
 # Preconfigure Flathub, where applications come from. `flatpak remote-add` would
 # write to /var/lib/flatpak, which the rootfs stage empties, so ship the remote as
 # a flatpakrepo file in /usr instead.
