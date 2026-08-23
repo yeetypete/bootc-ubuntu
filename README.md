@@ -62,6 +62,12 @@ prompt, and go through GNOME's initial setup after the reboot.
 To unlock with the TPM instead of a passphrase, enroll one afterwards with
 [`systemd-cryptenroll`](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html).
 
+## Updates
+
+Once installed, the system updates transactionally with `bootc upgrade`, which
+pulls a newer image and stages it as a new deployment you can roll back to if
+needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrades.html).
+
 ## Testing in a VM
 
 ```bash
@@ -88,11 +94,23 @@ just display=gtk boot ""  # No account, so GDM runs GNOME Initial Setup.
 > shows GNOME Initial Setup instead of the login screen. Create the first
 > account there.
 
-## Updates
+## Installing tools transiently
 
-Once installed, the system updates transactionally with `bootc upgrade`, which
-pulls a newer image and stages it as a new deployment you can roll back to if
-needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrades.html).
+For tracing and debugging tools that do not belong in the image, `bootc
+usr-overlay` adds a writable overlay on `/usr` that is discarded on reboot:
+
+```bash
+sudo bootc usr-overlay
+sudo apt update && sudo apt install -y strace
+```
+
+The overlay is backed by `tmpfs`, so anything installed into it lives in RAM and
+is gone after a reboot. Note that changes under `/etc` and `/var`, which package
+installations often make, persist. `bootc config-diff` can be used to list
+what a package left behind in `/etc`. See the
+[`bootc usr-overlay` docs](https://bootc-dev.github.io/bootc/man/bootc-usr-overlay.8.html).
+
+Anything you want to keep should be later added to bootc image.
 
 ## License
 
