@@ -62,6 +62,12 @@ prompt, and go through GNOME's initial setup after the reboot.
 To unlock with the TPM instead of a passphrase, enroll one afterwards with
 [`systemd-cryptenroll`](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html).
 
+## Updates
+
+Once installed, the system updates transactionally with `bootc upgrade`, which
+pulls a newer image and stages it as a new deployment you can roll back to if
+needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrades.html).
+
 ## Testing in a VM
 
 ```bash
@@ -87,12 +93,6 @@ just display=gtk boot ""  # No account, so GDM runs GNOME Initial Setup.
 > Passing no user leaves a freshly installed disk without an account, so GDM
 > shows GNOME Initial Setup instead of the login screen. Create the first
 > account there.
-
-## Updates
-
-Once installed, the system updates transactionally with `bootc upgrade`, which
-pulls a newer image and stages it as a new deployment you can roll back to if
-needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrades.html).
 
 ## Installing tools transiently
 
