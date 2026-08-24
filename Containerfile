@@ -44,6 +44,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
 
 FROM ubuntu:26.04 AS base
 
+ARG SOURCE_DATE_EPOCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Staged before any apt install so the specified pins apply to it.
