@@ -17,6 +17,10 @@ cache_repo := ""
 oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
 imgref := "docker.io/" + image + ":" + tag
+# Whether this is a release build.
+release := "false"
+# Registry reference recorded on the ISO and installed system.
+iso_imgref := if release == "true" { imgref } else { imgref + "-" + revision }
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
 created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
 # Container image providing chunkah, which repacks the image into content-based
@@ -206,7 +210,7 @@ live *args: oci
         --timestamp 0 \
         --build-context oci=.live \
         --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ imgref }} \
+        --build-arg IMAGE_REF={{ iso_imgref }} \
         --output type=local,dest=. \
         {{ args }} .
 
@@ -216,7 +220,7 @@ live-net *args: build
     podman build --jobs 0 --target iso-net-out \
         --timestamp 0 \
         --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ imgref }} \
+        --build-arg IMAGE_REF={{ iso_imgref }} \
         --output type=local,dest=. \
         {{ args }} .
 
