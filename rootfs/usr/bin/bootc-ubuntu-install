@@ -3,7 +3,7 @@ r"""Install this image onto a disk, with a LUKS2-encrypted root.
 
 Partitions the disk according to /usr/lib/bootc-ubuntu/repart.d, encrypts the
 root with a passphrase, and installs the image into it. Normally run this from
-a live ISO, which includes the bootc image:
+a live ISO, which either embeds the bootc image or pulls it from its registry:
 
     bootc-ubuntu-install /dev/nvme0n1
 
@@ -32,8 +32,8 @@ ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 DEFINITIONS = Path("/usr/lib/bootc-ubuntu/repart.d")
 MAPPING = "bootc-ubuntu-root"
 
-# dracut's dmsquash-live mounts the ISO here, so this is where an install off
-# the live media finds the image and the registry it updates from.
+# dracut's dmsquash-live mounts the ISO here: where an install off the live
+# media finds the image, if embedded, and the registry it updates from.
 LIVE_MEDIA = Path("/run/initramfs/live")
 LIVE_OCI = LIVE_MEDIA / "image.oci"
 LIVE_IMGREF = LIVE_MEDIA / "image.ref"
@@ -85,8 +85,9 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         default=None,
         help="Image to install, in containers-transports(5) form, such as "
-        "docker://docker.io/example/bootc-ubuntu:26.04. Defaults to the archive "
-        "the live ISO carries, so an install off the ISO needs no network.",
+        "docker://docker.io/example/bootc-ubuntu:26.04. Defaults to the ISO's "
+        "embedded image if it has one, otherwise pulls the ISO's own image "
+        "from its registry.",
     )
     parser.add_argument(
         "target_imgref",
@@ -112,10 +113,13 @@ def resolve_imgrefs(
     """Fall back to the image the live ISO was built with, and its registry."""
     live_imgref = LIVE_IMGREF.read_text().strip() if LIVE_IMGREF.exists() else ""
     if not source_imgref:
-        if not (LIVE_OCI.exists() and live_imgref):
-            sys.exit("no source image given, and this live ISO does not contain one.")
-        tag = live_imgref.rsplit(":", 1)[1]
-        source_imgref = f"oci:{LIVE_OCI}:{tag}"
+        if not live_imgref:
+            sys.exit("no source image given, and this live ISO does not record one.")
+        if LIVE_OCI.exists():
+            tag = live_imgref.rsplit(":", 1)[1]
+            source_imgref = f"oci:{LIVE_OCI}:{tag}"
+        else:
+            source_imgref = f"docker://{live_imgref}"
     return source_imgref, target_imgref or live_imgref
 
 
