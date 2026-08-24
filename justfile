@@ -6,6 +6,8 @@ image := "yeetypete/bootc-ubuntu"
 version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
+# Short SHA for tags.
+short_revision := replace_regex(revision, '^(.{7}).*$', '$1')
 # Commit date, recorded as the image creation annotation.
 created := `git log -1 --pretty=%cI 2>/dev/null || echo ""`
 # Tag the image is built with.
@@ -19,8 +21,9 @@ oci_dir := "image.oci"
 imgref := "docker.io/" + image + ":" + tag
 # Whether this is a release build.
 release := "false"
+iso_tag := if release == "true" { tag } else { tag + "-" + short_revision }
 # Registry reference recorded on the ISO and installed system.
-iso_imgref := if release == "true" { imgref } else { imgref + "-" + revision }
+iso_imgref := "docker.io/" + image + ":" + iso_tag
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
 created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
 # Container image providing chunkah, which repacks the image into content-based
@@ -95,24 +98,24 @@ build *args:
         {{ cache_args }} \
         {{ created_args }} \
         --tag {{ imgref }} \
-        --tag {{ imgref }}-{{ revision }} \
+        --tag {{ imgref }}-{{ short_revision }} \
         {{ args }} .
 
 # Export the bootc container image as an OCI directory.
 [group('image')]
 oci: build
     rm -rf {{ oci_dir }}
-    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
+    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ iso_tag }}
 
 # Push the image to its registry under the commit it was built from.
 [group('image')]
 push: build
-    podman push --compression-format zstd --force-compression {{ imgref }}-{{ revision }}
+    podman push --compression-format zstd --force-compression {{ imgref }}-{{ short_revision }}
 
 # Publish a tagged release.
 [group('image')]
 push-release: push
-    podman tag {{ imgref }}-{{ revision }} {{ imgref }}-{{ version }}
+    podman tag {{ imgref }}-{{ short_revision }} {{ imgref }}-{{ version }}
     podman push --compression-format zstd --force-compression {{ imgref }}-{{ version }}
     podman push --compression-format zstd --force-compression {{ imgref }}
 
