@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 ARG DESTDIR=/out
 ARG BOOTC_REPO=https://github.com/bootc-dev/bootc.git
-ARG BOOTC_VERSION=v1.16.8
+ARG BOOTC_VERSION=v1.16.9
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
