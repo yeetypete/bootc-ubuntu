@@ -62,12 +62,11 @@ COPY rootfs/usr/lib/kernel/ /usr/lib/kernel/
 # The stock kernel already carries FS_VERITY=y and EROFS_FS=m, which the composefs
 # backend needs at boot.
 #
-# NOTE: binutils and bubblewrap are required by bcvk VM tests only.
+# Install packages which the live installer and the installed system need.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     binutils \
-    bubblewrap \
     ca-certificates \
     composefs \
     cryptsetup-bin \
@@ -77,18 +76,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     e2fsprogs \
     efibootmgr \
     fdisk \
-    firmware-sof-signed \
     less \
-    linux-firmware \
     linux-image-generic \
     network-manager \
-    nftables \
     openssh-server \
     ostree \
-    passt \
-    podman \
     python3 \
-    skopeo \
     systemd \
     systemd-boot \
     systemd-cryptsetup \
@@ -96,8 +89,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     systemd-resolved \
     systemd-timesyncd \
     tpm2-tools \
-    uidmap \
-    wpasupplicant \
     zstd
 
 # Installed after the packages so it links against the archive's libostree, and
@@ -124,7 +115,24 @@ RUN systemctl enable \
     apt-daily.timer
 
 
-FROM base AS desktop
+# Installed-system-only packages not needed for the live installer.
+# NOTE: bubblewrap is only required for bcvk VM tests.
+FROM base AS runtime
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    bubblewrap \
+    firmware-sof-signed \
+    nftables \
+    passt \
+    podman \
+    skopeo \
+    uidmap \
+    wpasupplicant
+
+
+FROM runtime AS desktop
 
 # NOTE: We install with recommended dependencies to get a more complete desktop experience.
 # hadolint ignore=DL3015
@@ -168,64 +176,13 @@ FROM desktop AS rootfs
 COPY rootfs/ /overlay/
 RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
-# Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
-RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
-    depmod "${kver}" && \
-    dracut --force --no-hostonly --reproducible --zstd --verbose \
-      --kver "${kver}" "/usr/lib/modules/${kver}/initramfs.img" && \
-    cp "/boot/vmlinuz-${kver}" "/usr/lib/modules/${kver}/vmlinuz"
+RUN --mount=type=bind,source=tools/configure-rootfs.sh,target=/configure-rootfs \
+    /configure-rootfs
 
-# Make the filesystem layout ostree-compatible. Remove the placeholder fstab too,
-# or bootc's /etc overlay makes libmount warn "fstab has been modified" at boot.
-# Create /boot/EFI/Linux here because the composefs digest sealed into the UKI
-# excludes the UKI but not its parent directory.
-# hadolint ignore=SC2114
-RUN rm -rf /boot /srv /home /root /usr/local /mnt && \
-    mkdir -p /boot/EFI/Linux /sysroot /var && \
-    ln -s /var/home /home && \
-    ln -s /var/roothome /root && \
-    ln -s /var/srv /srv && \
-    ln -s /var/usrlocal /usr/local && \
-    ln -s /var/mnt /mnt && \
-    ln -s sysroot/ostree /ostree && \
-    rm -f /etc/fstab
-
-# Label paths with the source package that owns them, so that chunkah splits the
-# image into content-based layers rather than shipping one layer per build stage.
-# Must run after the last package is installed and before chunkah repacks.
-#
-# TODO: switch to chunkah's native dpkg backend and drop this step once
-# https://github.com/coreos/chunkah/issues/155 lands.
-RUN --mount=type=bind,source=tools/label_components.py,target=/label-components \
-    /label-components /var/lib/dpkg
-
-# Relocate the dpkg database to /usr so it persists across image updates (/var is
-# only applied at first provisioning). A tmpfiles.d symlink restores /var/lib/dpkg.
-RUN mkdir -p /usr/lib/sysimage && \
-    mv /var/lib/dpkg /usr/lib/sysimage/dpkg
-
-# Make systemd generate a real machine ID on first boot. Otherwise every installed
-# machine shares the same one.
-RUN : > /etc/machine-id
-
-# Let sshd-keygen generate unique per-machine host keys on first boot. Delete the
-# keys openssh-server's postinstall hook generates at build time.
-RUN rm -f /etc/ssh/ssh_host_*
-
-# Let ssl-cert.service generate a unique per-machine snakeoil keypair on first
-# boot. Delete the keypair ssl-cert's postinstall hook generates at build time.
-RUN find /etc/ssl/certs -lname ssl-cert-snakeoil.pem -delete && \
-    rm -f /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key
-
-# Drop the empty /etc/resolv.conf the base image ships, so that systemd's stock
-# tmpfiles rule can symlink it to the resolved stub at boot.
-RUN --network=none rm -f /etc/resolv.conf
-
-# bootc expects /var empty (populated at boot via tmpfiles.d) and /run, /tmp clean.
-RUN rm -rf /run/* /tmp/* /var/log/* && \
-    find /var -mindepth 1 -type f -delete && \
-    find /var -mindepth 1 -type l -delete && \
-    find /var -mindepth 1 -type d -empty -delete
+RUN --mount=type=bind,source=tools/cleanup.sh,target=/cleanup \
+    --mount=type=bind,source=tools/label_components.py,target=/label-components \
+    --network=none \
+    /cleanup
 
 LABEL containers.bootc=1
 
@@ -269,12 +226,28 @@ FROM chunked AS image
 COPY --from=uki /uki/*.efi /boot/EFI/Linux/
 
 
-# A live ISO that boots this image and installs it. Its own unified kernel image
-# comes from the rootfs stage, which still has a kernel to build one from, and
-# carries a command line for the live session rather than the sealed one. It
-# boots multi-user.target rather than the image's default, because the ISO
-# installer is only meant to run headless.
-FROM rootfs AS live-uki
+# The rootfs booted by the live ISO.
+FROM base AS live-base
+
+COPY rootfs/ /overlay/
+RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
+
+RUN --mount=type=bind,source=tools/configure-rootfs.sh,target=/configure-rootfs \
+    /configure-rootfs
+
+RUN --mount=type=bind,source=tools/cleanup.sh,target=/cleanup \
+    --mount=type=bind,source=tools/label_components.py,target=/label-components \
+    --network=none \
+    /cleanup
+
+LABEL containers.bootc=1
+
+RUN bootc container lint --fatal-warnings
+
+
+# Builds live.efi, the ISO's UKI (not the sealed one uki builds for installs).
+# Contains a live-session cmdline and multi-user.target, since it's headless.
+FROM live-base AS live-uki
 
 ARG ISO_LABEL
 
@@ -286,13 +259,19 @@ RUN mkdir -p /var/tmp /var/roothome && \
       --kver "${kver}" /live.efi
 
 
-FROM kernel-split AS live-rootfs
+FROM live-base AS live-rootfs
+
+# Remove vmlinuz and initramfs.img from /usr/lib/modules so the squashed live
+# rootfs doesn't duplicate what live-uki's UKI embeds.
+RUN mkdir /kernel && \
+    bootc container split-kernel-and-rootfs --rootfs / --output /kernel && \
+    rm -rf /kernel
 
 COPY live/overlay/ /overlay/
 RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
 
-FROM ${UBUNTU_IMAGE} AS iso
+FROM ${UBUNTU_IMAGE} AS iso-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -310,6 +289,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     squashfs-tools \
     xorriso
 
+
+# Embeds the image, for a fully offline install.
+FROM iso-base AS iso
+
 # hadolint ignore=DL3022
 RUN --mount=type=bind,from=live-rootfs,target=/rootfs \
     --mount=type=bind,from=live-uki,source=/live.efi,target=/live.efi \
@@ -321,3 +304,18 @@ RUN --mount=type=bind,from=live-rootfs,target=/rootfs \
 FROM scratch AS iso-out
 
 COPY --from=iso /out/ /
+
+
+# Installs by pulling the image from its registry instead.
+FROM iso-base AS iso-net
+
+# hadolint ignore=DL3022
+RUN --mount=type=bind,from=live-rootfs,target=/rootfs \
+    --mount=type=bind,from=live-uki,source=/live.efi,target=/live.efi \
+    --mount=type=bind,source=live/build-iso.sh,target=/usr/local/bin/build-iso \
+    build-iso "/out/${ISO_NAME}.iso"
+
+
+FROM scratch AS iso-net-out
+
+COPY --from=iso-net /out/ /

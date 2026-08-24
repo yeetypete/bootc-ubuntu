@@ -193,7 +193,7 @@ disk: oci
 [group('disk')]
 boot user=user: (qemu-boot disk_img user)
 
-# Build a live ISO that boots this image and installs it.
+# Build a live ISO that embeds the image for a fully offline install.
 [group('iso')]
 live *args: oci
     #!/usr/bin/env bash
@@ -210,9 +210,19 @@ live *args: oci
         --output type=local,dest=. \
         {{ args }} .
 
-# Build the live ISO and checksum it for distribution.
+# Build a live ISO that pulls the image from its registry.
 [group('iso')]
-dist: live
+live-net *args: build
+    podman build --jobs 0 --target iso-net-out \
+        --timestamp 0 \
+        --build-arg ISO_NAME={{ name }} \
+        --build-arg IMAGE_REF={{ imgref }} \
+        --output type=local,dest=. \
+        {{ args }} .
+
+# Build the network-install live ISO and checksum it for distribution.
+[group('iso')]
+dist: live-net
     sha256sum {{ iso }} > {{ iso }}.sha256
 
 # Boot the live ISO in qemu against a blank disk.
