@@ -76,9 +76,11 @@ jobs:
             podman login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Build image and live ISO
+        env:
+          RELEASE: ${{ github.ref_type == 'tag' }}
         run: |
           just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
-            revision="$REVISION" dist
+            revision="$REVISION" release="$RELEASE" dist
 
       - name: Push image
         env:

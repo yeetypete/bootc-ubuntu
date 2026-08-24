@@ -39,8 +39,9 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 just live  # Build bootc-ubuntu.iso.
 ```
 
-The ISO includes a bootc image. The installation does not require a network
-connection.
+The ISO includes a bootc image, so the installation does not require a network
+connection. Pre-built ISOs from [Releases](../../releases) pull the image from
+its registry instead. Run `just live` yourself for a fully offline install.
 
 To install, write the ISO to a USB device:
 

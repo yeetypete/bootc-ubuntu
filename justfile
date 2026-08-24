@@ -6,6 +6,8 @@ image := "yeetypete/bootc-ubuntu"
 version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
+# Short SHA for tags.
+short_revision := replace_regex(revision, '^(.{7}).*$', '$1')
 # Commit date, recorded as the image creation annotation.
 created := `git log -1 --pretty=%cI 2>/dev/null || echo ""`
 # Tag the image is built with.
@@ -17,6 +19,11 @@ cache_repo := ""
 oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
 imgref := "docker.io/" + image + ":" + tag
+# Whether this is a release build.
+release := "false"
+iso_tag := if release == "true" { tag } else { tag + "-" + short_revision }
+# Registry reference recorded on the ISO and installed system.
+iso_imgref := "docker.io/" + image + ":" + iso_tag
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
 created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
 # Container image providing chunkah, which repacks the image into content-based
@@ -91,24 +98,24 @@ build *args:
         {{ cache_args }} \
         {{ created_args }} \
         --tag {{ imgref }} \
-        --tag {{ imgref }}-{{ revision }} \
+        --tag {{ imgref }}-{{ short_revision }} \
         {{ args }} .
 
 # Export the bootc container image as an OCI directory.
 [group('image')]
 oci: build
     rm -rf {{ oci_dir }}
-    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ tag }}
+    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ iso_tag }}
 
 # Push the image to its registry under the commit it was built from.
 [group('image')]
 push: build
-    podman push --compression-format zstd --force-compression {{ imgref }}-{{ revision }}
+    podman push --compression-format zstd --force-compression {{ imgref }}-{{ short_revision }}
 
 # Publish a tagged release.
 [group('image')]
 push-release: push
-    podman tag {{ imgref }}-{{ revision }} {{ imgref }}-{{ version }}
+    podman tag {{ imgref }}-{{ short_revision }} {{ imgref }}-{{ version }}
     podman push --compression-format zstd --force-compression {{ imgref }}-{{ version }}
     podman push --compression-format zstd --force-compression {{ imgref }}
 
@@ -193,7 +200,7 @@ disk: oci
 [group('disk')]
 boot user=user: (qemu-boot disk_img user)
 
-# Build a live ISO that boots this image and installs it.
+# Build a live ISO that embeds the image for a fully offline install.
 [group('iso')]
 live *args: oci
     #!/usr/bin/env bash
@@ -206,13 +213,23 @@ live *args: oci
         --timestamp 0 \
         --build-context oci=.live \
         --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ imgref }} \
+        --build-arg IMAGE_REF={{ iso_imgref }} \
         --output type=local,dest=. \
         {{ args }} .
 
-# Build the live ISO and checksum it for distribution.
+# Build a live ISO that pulls the image from its registry.
 [group('iso')]
-dist: live
+live-net *args: build
+    podman build --jobs 0 --target iso-net-out \
+        --timestamp 0 \
+        --build-arg ISO_NAME={{ name }} \
+        --build-arg IMAGE_REF={{ iso_imgref }} \
+        --output type=local,dest=. \
+        {{ args }} .
+
+# Build the network-install live ISO and checksum it for distribution.
+[group('iso')]
+dist: live-net
     sha256sum {{ iso }} > {{ iso }}.sha256
 
 # Boot the live ISO in qemu against a blank disk.
@@ -227,8 +244,8 @@ live-install size="20G":
         -enable-kvm \
         -machine q35 \
         -cpu host \
-        -smp 4 \
-        -m 8192 \
+        -smp 2 \
+        -m 4096 \
         {{ ovmf }} \
         -drive file={{ iso }},media=cdrom \
         -drive file={{ live_img }},format=raw,if=virtio \
