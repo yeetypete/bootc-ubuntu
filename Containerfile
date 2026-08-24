@@ -2,14 +2,16 @@
 
 # Volume label of the live ISO.
 ARG ISO_LABEL=BOOTC_UBUNTU
+ARG SOURCE_DATE_EPOCH=0
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
 
-FROM ubuntu:26.04 AS bootc-builder
+FROM ${UBUNTU_IMAGE} AS bootc-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG DESTDIR=/out
 ARG BOOTC_REPO=https://github.com/bootc-dev/bootc.git
-ARG BOOTC_VERSION=v1.16.8
+ARG BOOTC_VERSION=v1.16.9
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -38,12 +40,12 @@ WORKDIR /bootc
 RUN git clone --depth 1 --branch "${BOOTC_VERSION}" "${BOOTC_REPO}" .
 
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
-    --mount=type=cache,target=/bootc/target,sharing=locked \
     make bin install DESTDIR="${DESTDIR}"
 
 
-FROM ubuntu:26.04 AS base
+FROM ${UBUNTU_IMAGE} AS base
 
+ARG SOURCE_DATE_EPOCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Staged before any apt install so the specified pins apply to it.
@@ -141,7 +143,8 @@ RUN locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8
 # Preconfigure Flathub, where applications come from. `flatpak remote-add` would
 # write to /var/lib/flatpak, which the rootfs stage empties, so ship the remote as
 # a flatpakrepo file in /usr instead.
-ADD --chmod=644 https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
+ADD --chmod=644 --checksum=sha256:3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a \
+    https://dl.flathub.org/repo/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
 COPY rootfs/usr/lib/systemd/system/flatpak-system-init.service /usr/lib/systemd/system/
 
@@ -157,7 +160,13 @@ RUN systemctl enable \
 
 FROM desktop AS rootfs
 
-COPY rootfs/ /
+# git tracks only the executable bit, so the rest of each mode comes from the
+# umask of whoever checked the tree out. Normalise before merging into /.
+#
+# TODO: replace with COPY --chmod=u=rwX,go=rX once Ubuntu's podman carries
+# buildah 1.45, which added symbolic modes.
+COPY rootfs/ /overlay/
+RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
 # Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
 RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
@@ -202,6 +211,11 @@ RUN : > /etc/machine-id
 # Let sshd-keygen generate unique per-machine host keys on first boot. Delete the
 # keys openssh-server's postinstall hook generates at build time.
 RUN rm -f /etc/ssh/ssh_host_*
+
+# Let ssl-cert.service generate a unique per-machine snakeoil keypair on first
+# boot. Delete the keypair ssl-cert's postinstall hook generates at build time.
+RUN find /etc/ssl/certs -lname ssl-cert-snakeoil.pem -delete && \
+    rm -f /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key
 
 # Drop the empty /etc/resolv.conf the base image ships, so that systemd's stock
 # tmpfiles rule can symlink it to the resolved stub at boot.
@@ -274,10 +288,11 @@ RUN mkdir -p /var/tmp /var/roothome && \
 
 FROM kernel-split AS live-rootfs
 
-COPY live/overlay/ /
+COPY live/overlay/ /overlay/
+RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
 
-FROM ubuntu:26.04 AS iso
+FROM ${UBUNTU_IMAGE} AS iso
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -285,6 +300,7 @@ ARG ISO_LABEL
 ARG ISO_NAME
 # Registry the installed system fetches updates from, recorded on the ISO.
 ARG IMAGE_REF
+ARG SOURCE_DATE_EPOCH
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
