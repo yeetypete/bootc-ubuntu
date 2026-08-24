@@ -159,7 +159,13 @@ RUN systemctl enable \
 
 FROM desktop AS rootfs
 
-COPY rootfs/ /
+# git tracks only the executable bit, so the rest of each mode comes from the
+# umask of whoever checked the tree out. Normalise before merging into /.
+#
+# TODO: replace with COPY --chmod=u=rwX,go=rX once Ubuntu's podman carries
+# buildah 1.45, which added symbolic modes.
+COPY rootfs/ /overlay/
+RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
 # Generate the initramfs and stage vmlinuz next to the modules for ostree/bootc.
 RUN kver="$(basename "$(echo /usr/lib/modules/*)")" && \
@@ -281,7 +287,8 @@ RUN mkdir -p /var/tmp /var/roothome && \
 
 FROM kernel-split AS live-rootfs
 
-COPY live/overlay/ /
+COPY live/overlay/ /overlay/
+RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
 
 FROM ubuntu:26.04 AS iso
