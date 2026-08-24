@@ -39,7 +39,6 @@ WORKDIR /bootc
 RUN git clone --depth 1 --branch "${BOOTC_VERSION}" "${BOOTC_REPO}" .
 
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
-    --mount=type=cache,target=/bootc/target,sharing=locked \
     make bin install DESTDIR="${DESTDIR}"
 
 
