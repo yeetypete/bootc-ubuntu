@@ -244,8 +244,8 @@ live-install size="20G":
         -enable-kvm \
         -machine q35 \
         -cpu host \
-        -smp 4 \
-        -m 8192 \
+        -smp 2 \
+        -m 4096 \
         {{ ovmf }} \
         -drive file={{ iso }},media=cdrom \
         -drive file={{ live_img }},format=raw,if=virtio \
