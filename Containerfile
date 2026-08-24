@@ -49,7 +49,14 @@ ARG SOURCE_DATE_EPOCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Staged before any apt install so the specified pins apply to it.
-COPY rootfs/etc/apt/ /etc/apt/
+COPY rootfs/etc/apt/preferences.d/ /etc/apt/preferences.d/
+
+# Installed before any third-party HTTPS apt source is staged, which apt-get
+# update cannot fetch without.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    ca-certificates
 
 # Staged before the kernel so the trigger is disabled before any package can
 # activate it.
@@ -67,7 +74,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install --no-install-recommends -y \
     binutils \
-    ca-certificates \
     composefs \
     cryptsetup-bin \
     dmsetup \
