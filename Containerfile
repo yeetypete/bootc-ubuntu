@@ -82,6 +82,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     openssh-server \
     ostree \
     python3 \
+    skopeo \
     systemd \
     systemd-boot \
     systemd-cryptsetup \
@@ -127,7 +128,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     nftables \
     passt \
     podman \
-    skopeo \
     uidmap \
     wpasupplicant
 
