@@ -3,8 +3,9 @@
 # Volume label of the live ISO.
 ARG ISO_LABEL=BOOTC_UBUNTU
 ARG SOURCE_DATE_EPOCH=0
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
 
-FROM ubuntu:26.04 AS bootc-builder
+FROM ${UBUNTU_IMAGE} AS bootc-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -42,7 +43,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     make bin install DESTDIR="${DESTDIR}"
 
 
-FROM ubuntu:26.04 AS base
+FROM ${UBUNTU_IMAGE} AS base
 
 ARG SOURCE_DATE_EPOCH
 ENV DEBIAN_FRONTEND=noninteractive
@@ -291,7 +292,7 @@ COPY live/overlay/ /overlay/
 RUN chmod -R u=rwX,go=rX /overlay && cp -a /overlay/. / && rm -rf /overlay
 
 
-FROM ubuntu:26.04 AS iso
+FROM ${UBUNTU_IMAGE} AS iso
 
 ENV DEBIAN_FRONTEND=noninteractive
 
