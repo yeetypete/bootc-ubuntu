@@ -175,7 +175,6 @@ def install(
             "to-filesystem",
             "--composefs-backend",
             f"--source-imgref={source_imgref}",
-            "--skip-fetch-check",
             *extra,
             target,
         ],
