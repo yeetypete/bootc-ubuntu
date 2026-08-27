@@ -35,30 +35,16 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 
 ## Installing
 
-```bash
-just live  # Build bootc-ubuntu.iso.
-```
-
-The ISO includes a bootc image, so the installation does not require a network
-connection. Pre-built ISOs from [Releases](../../releases) pull the image from
-its registry instead. Run `just live` yourself for a fully offline install.
-
-To install, write the ISO to a USB device:
+Boot any Ubuntu live medium (or use an existing Ubuntu system with network
+access) and run:
 
 ```bash
-sudo cp bootc-ubuntu.iso /dev/sdX && sync
+curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
+    | sudo bash -s -- /dev/nvme0n1  # The disk to install to, wiped.
 ```
 
-Boot the device, then follow the prompt. The live session lists the disks it
-finds, and the installer asks for confirmation and a LUKS passphrase before it
-writes anything:
-
-```bash
-bootc-ubuntu-install /dev/nvme0n1  # The disk to install to, wiped.
-```
-
-The installer then offers to reboot. Remove the installation medium at the
-prompt, and go through GNOME's initial setup after the reboot.
+The script asks for confirmation and a LUKS passphrase before it writes
+anything. Reboot into the installed system when it finishes.
 
 To unlock with the TPM instead of a passphrase, enroll one afterwards with
 [`systemd-cryptenroll`](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html).
@@ -75,13 +61,8 @@ needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrade
 just build             # Build the image into podman storage.
 just vm ubuntu         # Throwaway VM from the image, discarded on exit.
 
-just disk              # Install it to bootc-ubuntu.img, in a VM.
+just disk              # Install it to bootc-ubuntu.img, in a VM, offline.
 just boot ubuntu       # Boot bootc-ubuntu.img, with the console on this terminal.
-
-just live              # Build bootc-ubuntu.iso.
-just live-install      # Boot the ISO against a blank bootc-ubuntu-live.img, then
-                       # run `bootc-ubuntu-install in the live session.
-just boot-live ubuntu  # Boot bootc-ubuntu-live.img, the ISO install.
 ```
 
 The recipes above run the VMs headless. Set `display` to open a window instead:
