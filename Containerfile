@@ -52,8 +52,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Staged before any apt install so the specified pins apply to it.
 COPY rootfs/etc/apt/ /etc/apt/
 
-# Staged before the kernel so the trigger is disabled before any package can
-# activate it.
+# Keep package installs from generating an initramfs in /boot. The rootfs stage
+# builds the real one. The kernel's postinst hook skips it when INITRD=No, and
+# packages that call update-initramfs themselves are stopped by the config
+# below. Both are staged before the kernel, so nothing can generate one first.
+ENV INITRD=No
 COPY rootfs/etc/initramfs-tools/update-initramfs.conf /etc/initramfs-tools/
 
 # Staged before the kernel so /usr/lib/kernel/install.conf is in place and
