@@ -21,9 +21,14 @@ oci_dir := "image.oci"
 imgref := "docker.io/" + image + ":" + tag
 # Whether this is a release build.
 release := "false"
-iso_tag := if release == "true" { tag } else { tag + "-" + short_revision }
-# Registry reference recorded on the ISO and installed system.
-iso_imgref := "docker.io/" + image + ":" + iso_tag
+# Tag identifying this particular build.
+build_tag := if release == "true" { tag } else { tag + "-" + short_revision }
+# Registry reference recorded on installed systems as their update source.
+build_imgref := "docker.io/" + image + ":" + build_tag
+# Registry reference pinned to the commit, which every build is tagged with.
+revision_imgref := imgref + "-" + short_revision
+# Registry reference for a tagged release.
+version_imgref := imgref + "-" + version
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
 created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
 # Container image providing chunkah, which repacks the image into content-based
@@ -98,26 +103,31 @@ build *args:
         {{ cache_args }} \
         {{ created_args }} \
         --tag {{ imgref }} \
-        --tag {{ imgref }}-{{ short_revision }} \
+        --tag {{ revision_imgref }} \
         {{ args }} .
 
 # Export the bootc container image as an OCI directory.
 [group('image')]
 oci: build
     rm -rf {{ oci_dir }}
-    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ iso_tag }}
+    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ build_tag }}
 
 # Push the image to its registry under the commit it was built from.
 [group('image')]
 push: build
-    podman push --compression-format zstd --force-compression {{ imgref }}-{{ short_revision }}
+    podman push --compression-format zstd --force-compression {{ revision_imgref }}
 
 # Publish a tagged release.
 [group('image')]
 push-release: push
-    podman tag {{ imgref }}-{{ short_revision }} {{ imgref }}-{{ version }}
-    podman push --compression-format zstd --force-compression {{ imgref }}-{{ version }}
+    podman tag {{ revision_imgref }} {{ version_imgref }}
+    podman push --compression-format zstd --force-compression {{ version_imgref }}
     podman push --compression-format zstd --force-compression {{ imgref }}
+
+# Switch this machine to the locally built image.
+[group('image')]
+switch *args: oci
+    sudo bootc switch --transport oci {{ args }} {{ justfile_directory() }}/{{ oci_dir }}:{{ build_tag }}
 
 # Print the credentials that provision NAME, one name:base64 pair per line. The
 # account lives only in what is passed in at boot, not the image.
@@ -189,7 +199,7 @@ disk: oci
     rm -f {{ disk_img }}
     install="bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
-    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ tag }} {{ imgref }}"
+    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ imgref }}"
     bcvk ephemeral run-ssh --rm \
         --mount-disk-file "$PWD/{{ disk_img }}:target" \
         --bind "$PWD:repo" \
@@ -213,7 +223,7 @@ live *args: oci
         --timestamp 0 \
         --build-context oci=.live \
         --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ iso_imgref }} \
+        --build-arg IMAGE_REF={{ build_imgref }} \
         --output type=local,dest=. \
         {{ args }} .
 
@@ -223,7 +233,7 @@ live-net *args: build
     podman build --jobs 0 --target iso-net-out \
         --timestamp 0 \
         --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ iso_imgref }} \
+        --build-arg IMAGE_REF={{ build_imgref }} \
         --output type=local,dest=. \
         {{ args }} .
 
