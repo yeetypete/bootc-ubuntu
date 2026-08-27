@@ -75,29 +75,17 @@ jobs:
           printf '%s' "$DOCKERHUB_TOKEN" |
             podman login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Build image and live ISO
+      - name: Build image
         env:
           RELEASE: ${{ github.ref_type == 'tag' }}
         run: |
           just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
-            revision="$REVISION" release="$RELEASE" dist
+            revision="$REVISION" release="$RELEASE" build
 
       - name: Push image
         env:
           RECIPE: ${{ github.ref_type == 'tag' && 'push-release' || 'push' }}
         run: just version="${VERSION#v}" revision="$REVISION" "$RECIPE"
-
-      - name: Upload live ISO
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: live-iso
-          path: |
-            *.iso
-            *.iso.sha256
-          if-no-files-found: error
-          retention-days: 5
-          # The ISO is a compressed squashfs already, so zipping it only costs time.
-          compression-level: 0
 
   release:
     name: release
@@ -113,12 +101,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download live ISO
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: live-iso
-          path: live-iso
-
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,5 +108,4 @@ jobs:
         run: |
           gh release create "$TAG" \
             --title "$TAG" \
-            --generate-notes \
-            live-iso/*
+            --generate-notes
