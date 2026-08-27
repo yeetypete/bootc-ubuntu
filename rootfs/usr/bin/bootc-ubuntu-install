@@ -2,13 +2,8 @@
 r"""Install this image onto a disk, with a LUKS2-encrypted root.
 
 Partitions the disk according to /usr/lib/bootc-ubuntu/repart.d, encrypts the
-root with a passphrase, and installs the image into it. Normally run this from
-a live ISO, which either embeds the bootc image or pulls it from its registry:
-
-    bootc-ubuntu-install /dev/nvme0n1
-
-You may also run `bootc-ubuntu-install` from the image as a container, against
-a disk on the host:
+root with a passphrase, and installs the image into it. Run this from the bootc
+image as a container, against a disk on the host:
 
     podman run --rm -it --privileged --pid=host --ipc=host \\
       -v /dev:/dev -v /run/udev:/run/udev:ro \\
@@ -18,7 +13,6 @@ a disk on the host:
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,29 +26,22 @@ ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 DEFINITIONS = Path("/usr/lib/bootc-ubuntu/repart.d")
 MAPPING = "bootc-ubuntu-root"
 
-# dracut's dmsquash-live mounts the ISO here: where an install off the live
-# media finds the image, if embedded, and the registry it updates from.
-LIVE_MEDIA = Path("/run/initramfs/live")
-LIVE_OCI = LIVE_MEDIA / "image.oci"
-LIVE_IMGREF = LIVE_MEDIA / "image.ref"
-
-# bootc stages the source image here, and containers/image hardcodes the path
-# rather than honouring TMPDIR.
-SCRATCH = Path("/var/tmp")
-SCRATCH_NEEDED = 128 * 1024**2
-
 
 def partition_of_type(device: Path, type_guid: str) -> Path:
-    """Find a partition by its type GUID."""
+    """Find a partition by its type GUID, reading the partition table directly.
+
+    This runs inside a podman container, where the host's udev cannot be
+    waited on, so use sfdisk.
+    """
     out = subprocess.run(
-        ["lsblk", "--json", "--list", "--output", "PATH,PARTTYPE", device],
+        ["sfdisk", "--json", device],
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    for part in json.loads(out)["blockdevices"]:
-        if (part.get("parttype") or "").lower() == type_guid:
-            return Path(part["path"])
+    for part in json.loads(out)["partitiontable"]["partitions"]:
+        if part.get("type", "").lower() == type_guid:
+            return Path(part["node"])
     sys.exit(f"no partition of type {type_guid} on {device}.")
 
 
@@ -74,7 +61,15 @@ def confirm(device: Path) -> None:
         sys.exit("Aborted.")
 
 
-def parse_args() -> argparse.Namespace:
+class Args(argparse.Namespace):
+    """The parsed command line, typed."""
+
+    device: Path
+    source_imgref: str
+    target_imgref: str | None
+
+
+def parse_args() -> Args:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -82,12 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("device", type=Path, help="Disk to install to.")
     parser.add_argument(
         "source_imgref",
-        nargs="?",
-        default=None,
         help="Image to install, in containers-transports(5) form, such as "
-        "docker://docker.io/example/bootc-ubuntu:26.04. Defaults to the ISO's "
-        "embedded image if it has one, otherwise pulls the ISO's own image "
-        "from its registry.",
+        "docker://docker.io/example/bootc-ubuntu:26.04.",
     )
     parser.add_argument(
         "target_imgref",
@@ -95,38 +86,13 @@ def parse_args() -> argparse.Namespace:
         help="Registry reference the installed system fetches updates from, such "
         "as docker.io/example/bootc-ubuntu:26.04.",
     )
-    parser.add_argument(
-        "--reboot",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Reboot once the installation finishes. An installation from the "
-        "live media asks on a terminal and reboots without one. Anywhere else "
-        "it defaults to not rebooting.",
-    )
-    return parser.parse_args()
-
-
-def resolve_imgrefs(
-    source_imgref: str | None,
-    target_imgref: str | None,
-) -> tuple[str, str]:
-    """Fall back to the image the live ISO was built with, and its registry."""
-    live_imgref = LIVE_IMGREF.read_text().strip() if LIVE_IMGREF.exists() else ""
-    if not source_imgref:
-        if not live_imgref:
-            sys.exit("no source image given, and this live ISO does not record one.")
-        if LIVE_OCI.exists():
-            tag = live_imgref.rsplit(":", 1)[1]
-            source_imgref = f"oci:{LIVE_OCI}:{tag}"
-        else:
-            source_imgref = f"docker://{live_imgref}"
-    return source_imgref, target_imgref or live_imgref
+    return parser.parse_args(namespace=Args())
 
 
 def install(
     device: Path,
     source_imgref: str,
-    target_imgref: str,
+    target_imgref: str | None,
     keyfile: Path,
     target: Path,
 ) -> None:
@@ -145,7 +111,6 @@ def install(
         # enable the ext4 feature by default.
         env=os.environ | {"SYSTEMD_REPART_MKFS_OPTIONS_EXT4": "-O verity"},
     )
-    subprocess.run(["udevadm", "settle"], check=True)
 
     esp = partition_of_type(device, ESP_TYPE)
     root = partition_of_type(device, ROOT_TYPE)
@@ -186,40 +151,20 @@ def install(
     print(f"  systemd-cryptenroll --tpm2-device=auto {root}.")
 
 
-def should_reboot(explicit: bool | None) -> bool:
-    """Finish an installation from the live media by rebooting."""
-    if explicit is not None:
-        return explicit
-    if not LIVE_MEDIA.is_dir():
-        return False
-    if not sys.stdin.isatty():
-        return True
-    return input("\nReboot now? [Y/n] ").strip().lower() in ("", "y", "yes")
-
-
 def main() -> None:
     args = parse_args()
-    source_imgref, target_imgref = resolve_imgrefs(
-        args.source_imgref,
-        args.target_imgref,
-    )
 
     if os.geteuid() != 0:
         sys.exit("This script must run as root.")
     if not args.device.is_block_device():
         sys.exit(f"{args.device} is not a block device.")
 
-    free = shutil.disk_usage(SCRATCH).free
-    if free < SCRATCH_NEEDED:
-        sys.exit(
-            f"{SCRATCH} has {free // 1024**2}M free, the install needs about "
-            f"{SCRATCH_NEEDED // 1024**2}M there. Mount more space and retry.",
-        )
-
     confirm(args.device)
     passphrase = prompt_passphrase()
 
-    with tempfile.TemporaryDirectory() as tmp:
+    # Not under /tmp: bootc install mounts a fresh tmpfs over /tmp when it is
+    # not one already, as in a container, which would shadow the target mount.
+    with tempfile.TemporaryDirectory(dir="/run") as tmp:
         # repart takes the key from a file. Writing the passphrase with no
         # trailing newline makes the resulting keyslot an ordinary passphrase.
         keyfile = Path(tmp) / "passphrase"
@@ -229,18 +174,14 @@ def main() -> None:
         target = Path(tmp) / "target"
         target.mkdir()
         try:
-            install(args.device, source_imgref, target_imgref, keyfile, target)
+            install(
+                args.device, args.source_imgref, args.target_imgref, keyfile, target
+            )
         finally:
             subprocess.run(["umount", "--recursive", target], check=False)
             subprocess.run(["cryptsetup", "close", MAPPING], check=False)
 
-    if should_reboot(args.reboot):
-        print("Remove the installation medium. Rebooting.")
-        subprocess.run(["systemctl", "reboot"], check=True)
-    elif LIVE_MEDIA.is_dir():
-        print("\nRemove the installation medium and reboot into the new system.")
-    else:
-        print(f"\nBoot {args.device} to start the new system.")
+    print(f"\nBoot {args.device} to start the new system.")
 
 
 if __name__ == "__main__":
