@@ -22,3 +22,12 @@ ln -s /var/srv /srv
 ln -s /var/mnt /mnt
 ln -s sysroot/ostree /ostree
 rm -f /etc/fstab
+
+# Keep the font cache in /usr so it is included in the image.
+if command -v fc-cache >/dev/null; then # absent outside the desktop stage
+    # Fail the build if fontconfig ever ships a different default.
+    grep -q '<cachedir>/var/cache/fontconfig<' /etc/fonts/fonts.conf
+    sed -i 's|<cachedir>/var/cache/fontconfig<|<cachedir>/usr/lib/fontconfig/cache<|' \
+        /etc/fonts/fonts.conf
+    fc-cache --system-only --force
+fi
