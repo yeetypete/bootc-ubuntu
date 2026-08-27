@@ -259,7 +259,7 @@ RUN mkdir -p /var/tmp /var/roothome && \
     kver="$(basename "$(echo /usr/lib/modules/*)")" && \
     dracut --force --no-hostonly --reproducible --zstd --uefi \
       --add dmsquash-live --omit bootc \
-      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image systemd.unit=multi-user.target console=tty0 console=ttyS0,115200" \
+      --kernel-cmdline "root=live:CDLABEL=${ISO_LABEL} rd.live.image rd.overlay systemd.unit=multi-user.target console=tty0 console=ttyS0,115200" \
       --kver "${kver}" /live.efi
 
 
