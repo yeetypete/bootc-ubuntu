@@ -23,8 +23,6 @@ imgref := "docker.io/" + image + ":" + tag
 release := "false"
 # Tag identifying this particular build.
 build_tag := if release == "true" { tag } else { tag + "-" + short_revision }
-# Registry reference recorded on installed systems as their update source.
-build_imgref := "docker.io/" + image + ":" + build_tag
 # Registry reference pinned to the commit, which every build is tagged with.
 revision_imgref := imgref + "-" + short_revision
 # Registry reference for a tagged release.
@@ -43,14 +41,10 @@ chunked := "localhost/bootc-ubuntu-chunked:" + tag
 # Firmware for the qemu recipes. Booting this image needs UEFI.
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
-# Base name of the generated disk images and ISO.
+# Base name of the generated disk image.
 name := "bootc-ubuntu"
 # Disk image `just disk` installs to, and `just boot` boots. bcvk sizes it for us.
 disk_img := name + ".img"
-# Live ISO built by `just live`.
-iso := name + ".iso"
-# Disk image the live ISO installs to, and `just boot-live` boots.
-live_img := name + "-live.img"
 # Account provisioned into a test VM.
 user := "ubuntu"
 # QEMU display for the VM recipes. "none" keeps the console on this terminal;
@@ -206,64 +200,28 @@ disk: oci
         {{ imgref }} \
         -t "$install"
 
+# Install to a disk image through install.sh.
+[group('disk')]
+disk-script: oci
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -f {{ disk_img }}
+    # Point podman at the host's image store, which bcvk mounts read-only.
+    install="sudo CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/tests/vm-storage.conf \
+    bash /run/virtiofs-mnt-repo/install.sh \
+    --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
+    /dev/disk/by-id/virtio-target"
+    bcvk ephemeral run-ssh --rm \
+        --bind-storage-ro \
+        --add-swap 8G \
+        --mount-disk-file "$PWD/{{ disk_img }}:target" \
+        --bind "$PWD:repo" \
+        {{ imgref }} \
+        -t "$install"
+
 # Boot the disk image from `just disk`.
 [group('disk')]
 boot user=user: (qemu-boot disk_img user)
-
-# Build a live ISO that embeds the image for a fully offline install.
-[group('iso')]
-live *args: oci
-    #!/usr/bin/env bash
-    set -euo pipefail
-    rm -rf .live
-    mkdir .live
-    trap 'rm -rf .live' EXIT
-    cp -al {{ oci_dir }} .live/image.oci
-    podman build --jobs 0 --target iso-out \
-        --timestamp 0 \
-        --build-context oci=.live \
-        --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ build_imgref }} \
-        --output type=local,dest=. \
-        {{ args }} .
-
-# Build a live ISO that pulls the image from its registry.
-[group('iso')]
-live-net *args: build
-    podman build --jobs 0 --target iso-net-out \
-        --timestamp 0 \
-        --build-arg ISO_NAME={{ name }} \
-        --build-arg IMAGE_REF={{ build_imgref }} \
-        --output type=local,dest=. \
-        {{ args }} .
-
-# Build the network-install live ISO and checksum it for distribution.
-[group('iso')]
-dist: live-net
-    sha256sum {{ iso }} > {{ iso }}.sha256
-
-# Boot the live ISO in qemu against a blank disk.
-[doc('Boot the live ISO against a blank disk, to install onto it.')]
-[group('iso')]
-live-install size="20G":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    rm -f {{ live_img }}
-    truncate -s {{ size }} {{ live_img }}
-    exec qemu-system-x86_64 \
-        -enable-kvm \
-        -machine q35 \
-        -cpu host \
-        -smp 2 \
-        -m 4096 \
-        {{ ovmf }} \
-        -drive file={{ iso }},media=cdrom \
-        -drive file={{ live_img }},format=raw,if=virtio \
-        {{ graphics }}
-
-# Boot the disk image `just live-install` installed to.
-[group('iso')]
-boot-live user=user: (qemu-boot live_img user)
 
 # List running VMs.
 [group('vm')]
@@ -277,6 +235,6 @@ vm-kill:
     -pkill -f '[q]emu-system-x86_64 .*{{ name }}'
     -bcvk ephemeral rm-all --force
 
-# Remove the generated OCI archive, disk images and ISO.
+# Remove the generated OCI archive and disk image.
 clean:
-    rm -rf {{ oci_dir }} {{ disk_img }} {{ live_img }} {{ iso }} {{ iso }}.sha256 .live
+    rm -rf {{ oci_dir }} {{ disk_img }}
