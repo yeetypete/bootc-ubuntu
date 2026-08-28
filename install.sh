@@ -8,7 +8,7 @@ set -euo pipefail
 
 # The image to install, and the registry reference the installed system
 # fetches updates from.
-IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu:26.04}"
+IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu-desktop:26.04}"
 # Where bootc installs from, in containers-transports(5) form.
 SOURCE="${SOURCE:-containers-storage:${IMAGE}}"
 usage() {

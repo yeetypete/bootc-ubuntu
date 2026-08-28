@@ -1,0 +1,16 @@
+# Wired DHCP, so a freshly installed system can reach its registry to update.
+# A derived image picks its own renderer by shipping a file that sorts later.
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    all-en:
+      match:
+        name: en*
+      dhcp4: true
+      dhcp6: true
+    all-eth:
+      match:
+        name: eth*
+      dhcp4: true
+      dhcp6: true

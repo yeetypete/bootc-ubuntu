@@ -82,7 +82,7 @@ jobs:
           just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
             revision="$REVISION" release="$RELEASE" build
 
-      - name: Push image
+      - name: Push images
         env:
           RECIPE: ${{ github.ref_type == 'tag' && 'push-release' || 'push' }}
         run: just version="${VERSION#v}" revision="$REVISION" "$RECIPE"

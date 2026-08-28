@@ -1,0 +1,734 @@
+#!/usr/bin/env python3
+"""Build-time tooling for bootc-ubuntu images.
+
+After installing packages and copying configuration in, finish the Containerfile
+with:
+
+    RUN /usr/libexec/bootc-ubuntu-imagectl finalize
+"""
+
+import argparse
+import errno
+import functools
+import grp
+import os
+import pwd
+import shutil
+import stat
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+MODULES = Path("/usr/lib/modules")
+STOCK_TMPFILES = Path("/usr/lib/tmpfiles.d")
+VAR_TMPFILES = STOCK_TMPFILES / "bootc-ubuntu-var.conf"
+DPKG_ADMINDIR = Path("/var/lib/dpkg")
+SYSIMAGE = Path("/usr/lib/sysimage")
+
+# Package manager state that describes the image rather than the machine,
+# relocated to /usr so it persists across image updates: /var is only applied
+# at first provisioning. Symlinks, recreated by a tmpfiles.d rule at boot, keep
+# dpkg, apt, debconf, ucf, pam-auth-update and deb-systemd-helper working.
+IMAGE_STATE = {
+    DPKG_ADMINDIR: SYSIMAGE / "dpkg",
+    Path("/var/lib/pam"): SYSIMAGE / "pam",
+    Path("/var/lib/ucf"): SYSIMAGE / "ucf",
+    Path("/var/cache/debconf"): SYSIMAGE / "debconf",
+    Path("/var/lib/systemd/deb-systemd-helper-enabled"): SYSIMAGE
+    / "deb-systemd-helper-enabled",
+    Path("/var/lib/systemd/deb-systemd-user-helper-enabled"): SYSIMAGE
+    / "deb-systemd-user-helper-enabled",
+}
+
+# Toplevel symlink to the /var directory backing it, laid out the way ostree
+# and bootc expect. tmpfiles.d creates the targets at boot.
+TOPLEVEL_LINKS = {
+    Path("/home"): "var/home",
+    Path("/root"): "var/roothome",
+    Path("/srv"): "var/srv",
+    Path("/mnt"): "var/mnt",
+    Path("/media"): "run/media",
+    Path("/ostree"): "sysroot/ostree",
+}
+
+# Symlinks systemd's stock tmpfiles.d recreate at boot, kept so a derived image
+# has them between finalize and its own package installs.
+VAR_LINKS = {
+    Path("/var/run"): "../run",
+    Path("/var/lock"): "../run/lock",
+}
+
+# What a finalized image keeps in /var, so apt and dracut can run again in a
+# derived image. tmpfiles.d recreates all of it at boot.
+VAR_DIRS = [
+    (Path("/var/tmp"), 0o1777, None),
+    (Path("/var/log/apt"), 0o755, None),
+    (Path("/var/cache/apt"), 0o755, None),
+    (Path("/var/cache/apt/archives"), 0o755, None),
+    (Path("/var/cache/apt/archives/partial"), 0o700, "_apt"),
+    (Path("/var/lib/apt"), 0o755, None),
+    (Path("/var/lib/apt/lists"), 0o755, None),
+    (Path("/var/lib/apt/lists/partial"), 0o700, "_apt"),
+]
+
+VAR = Path("/var")
+
+# Where `podman run --mount=type=image` presents the rootfs to rechunk.
+CHUNKAH_ROOTFS = Path("/chunkah")
+
+
+def die(message: str) -> None:
+    """Exit with a message naming this tool."""
+    sys.exit(f"bootc-ubuntu-imagectl: {message}")
+
+
+def step(message: str) -> None:
+    """Report the step about to run."""
+    print(f"bootc-ubuntu-imagectl: {message}", file=sys.stderr, flush=True)
+
+
+def run(*args: str, env: dict[str, str] | None = None) -> None:
+    """Run a command, raising if it fails."""
+    subprocess.run(args, check=True, env=env)
+
+
+def capture(*args: str) -> str:
+    """Run a command and return its standard output.
+
+    Returns:
+        Everything the command wrote to standard output.
+    """
+    completed = subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True)
+    return completed.stdout
+
+
+def summary(command: Callable[[argparse.Namespace], None]) -> str:
+    """Summarise a subcommand for --help.
+
+    Returns:
+        The first line of the subcommand's docstring, empty if it has none.
+    """
+    doc = command.__doc__
+    return doc.splitlines()[0] if doc else ""
+
+
+def kernel_version() -> str:
+    """Find the kernel the image ships. bootc requires exactly one.
+
+    Returns:
+        The kernel version.
+    """
+    kvers = sorted(p.name for p in MODULES.iterdir() if p.is_dir())
+    if len(kvers) != 1:
+        die(
+            f"expected exactly one kernel in {MODULES}, found: {' '.join(kvers)}\n"
+            "Purge the kernels you do not want before finalizing, e.g. "
+            "apt-get purge 'linux-image-6.*' in the same RUN that installs a new one."
+        )
+    return kvers[0]
+
+
+def cmd_initramfs(args: argparse.Namespace) -> None:
+    """Build the initramfs and stage the kernel under /usr/lib/modules."""
+    kver = kernel_version()
+    moddir = MODULES / kver
+    step(f"building the initramfs for {kver}")
+
+    # A freshly installed kernel package leaves vmlinuz in /boot. An already
+    # finalized image has it in the modules directory.
+    boot_vmlinuz = Path(f"/boot/vmlinuz-{kver}")
+    if boot_vmlinuz.is_file():
+        boot_vmlinuz.copy(moddir / "vmlinuz", preserve_metadata=True)
+    if not (moddir / "vmlinuz").is_file():
+        die(f"no kernel image for {kver}")
+
+    run("depmod", kver)
+    # The component xattrs an earlier finalize left on the rootfs must not end
+    # up in the initramfs.
+    run(
+        "dracut",
+        "--force",
+        "--no-hostonly",
+        "--reproducible",
+        "--zstd",
+        "--verbose",
+        "--kver",
+        kver,
+        str(moddir / "initramfs.img"),
+        env=os.environ | {"DRACUT_NO_XATTR": "1"},
+    )
+    (moddir / "initramfs.img").chmod(0o600)
+
+
+# Recorded path to source package.
+type Owners = dict[str, str]
+# Directory to the source package owning its whole subtree.
+type Components = dict[PurePosixPath, str]
+
+
+class LabelCounts(NamedTuple):
+    """What one labelling pass touched."""
+
+    files: int
+    unclaimed_symlinks: int
+    broken_hardlinks: int
+    broken_hardlink_bytes: int
+
+
+COMPONENT_XATTR = "user.component"
+UPDATE_INTERVAL_XATTR = "user.update-interval"
+
+# dpkg-query interprets the backslash escapes itself.
+QUERY_FORMAT = r"${binary:Package}\t${source:Package}\t${db:Status-Status}\n"
+
+# States in which a package's files are on disk. A package awaiting a trigger is
+# still installed.
+INSTALLED_STATES = frozenset({"installed", "triggers-awaiting", "triggers-pending"})
+
+
+def source_packages(admindir: Path) -> dict[str, str]:
+    """Map each installed binary package to its source package.
+
+    Returns:
+        Binary package name to source package name.
+    """
+    listing = capture("dpkg-query", f"--admindir={admindir}", "-f", QUERY_FORMAT, "-W")
+    packages = {}
+    for line in listing.splitlines():
+        binary, source, status = line.split("\t")
+        if status in INSTALLED_STATES:
+            packages[binary] = source
+    return packages
+
+
+@functools.cache
+def canonical_dir(directory: Path) -> Path:
+    """Resolve the merged-/usr aliases, so /lib/firmware is /usr/lib/firmware.
+
+    Otherwise the few packages still recording paths under /lib look like the
+    sole owners of /lib, and labelling it labels /usr/lib.
+
+    Returns:
+        The directory with every symlink along it resolved.
+    """
+    return directory.resolve()
+
+
+def owned_paths(admindir: Path, source_of: dict[str, str]) -> tuple[Owners, list[str]]:
+    """Map every file and symlink dpkg records to its source package.
+
+    Directories are skipped, because dpkg lists a shared directory under every
+    package installing into it. Absent paths are skipped too, since the base
+    image's dpkg excludes drop man pages, locales and documentation.
+
+    Returns:
+        The owned paths, and the packages with no known source package.
+    """
+    owners: Owners = {}
+    unknown = []
+    for list_file in sorted(admindir.glob("info/*.list")):
+        source = source_of.get(list_file.stem)
+        if source is None:
+            unknown.append(list_file.stem)
+            continue
+        # surrogateescape preserves paths that are not valid UTF-8.
+        listed = list_file.read_text(encoding="utf-8", errors="surrogateescape")
+        for line in listed.splitlines():
+            entry = Path(line)
+            info = entry.info
+            if info.is_file(follow_symlinks=False) or info.is_symlink():
+                owners[str(canonical_dir(entry.parent) / entry.name)] = source
+    return owners, unknown
+
+
+def wholly_owned_dirs(owners: Owners) -> Components:
+    """Find the topmost directories whose recorded contents come from one source.
+
+    chunkah applies a directory's component to everything beneath it, so one
+    xattr here stands in for thousands below.
+
+    Returns:
+        Directory to the source package owning its whole subtree.
+    """
+    sources: dict[PurePosixPath, set[str]] = defaultdict(set)
+    for path, source in owners.items():
+        for directory in PurePosixPath(path).parents:
+            sources[directory].add(source)
+
+    owned = {d for d, s in sources.items() if len(s) == 1}
+    return {d: next(iter(sources[d])) for d in owned if d.parent not in owned}
+
+
+def update_interval(source: str) -> str:
+    """Judge roughly how often a source package changes, which chunkah packs by.
+
+    Rarely changing components share layers with each other, so an update
+    ships as few layers as possible.
+
+    Returns:
+        A chunkah update interval.
+    """
+    if source.startswith(("fonts-", "firmware-", "linux-firmware")) or source.endswith(
+        ("-data", "-theme", "-icon-theme", "-wallpapers")
+    ):
+        return "quarterly"
+    if source.startswith("linux"):
+        return "weekly"
+    return "monthly"
+
+
+def label(path: str | os.PathLike[str], source: str) -> None:
+    """Tag a path with the component chunkah should pack it with."""
+    os.setxattr(path, COMPONENT_XATTR, source.encode())
+    os.setxattr(path, UPDATE_INTERVAL_XATTR, update_interval(source).encode())
+
+
+def apply_labels(owners: Owners, components: Components) -> LabelCounts:
+    """Write the component xattr onto each directory and the paths it misses.
+
+    Returns:
+        What the pass labelled, and what it could not.
+    """
+    for directory, source in components.items():
+        label(directory, source)
+
+    files = symlinks = hardlinks = unshared = 0
+    for path, source in owners.items():
+        if any(d in components for d in PurePosixPath(path).parents):
+            continue
+        info = Path(path).lstat()
+        if stat.S_ISLNK(info.st_mode):
+            # The kernel rejects user.* xattrs on symlinks.
+            symlinks += 1
+            continue
+        if info.st_nlink > 1:
+            # Copying the file out of its layer breaks the link, which costs
+            # a duplicate of its contents.
+            hardlinks += 1
+            unshared += info.st_size
+        label(path, source)
+        files += 1
+    return LabelCounts(files, symlinks, hardlinks, unshared)
+
+
+def label_components(admindir: Path) -> None:
+    """Label package-owned paths with the source package that owns them.
+
+    chunkah then splits the image into content-based layers instead of one
+    layer per build stage.
+
+    TODO: switch to chunkah's native dpkg backend and drop this once
+    https://github.com/coreos/chunkah/issues/155 lands.
+    """
+    step("labelling files with the package that owns them")
+    owners, unknown = owned_paths(admindir, source_packages(admindir))
+    for package in unknown:
+        print(
+            f"No source package for {package}, leaving its files unclaimed.",
+            file=sys.stderr,
+        )
+
+    components = wholly_owned_dirs(owners)
+    files, symlinks, hardlinks, unshared = apply_labels(owners, components)
+    if not components and not files:
+        die(f"nothing to label under {admindir}")
+
+    # The kernel image and initramfs are generated, not shipped by a package.
+    # Pack them with the kernel's modules.
+    moddir = MODULES / kernel_version()
+    kernel_sources = Counter(
+        source for path, source in owners.items() if Path(path).is_relative_to(moddir)
+    )
+    if kernel_sources:
+        kernel_source, _ = kernel_sources.most_common(1)[0]
+        for name in ("vmlinuz", "initramfs.img"):
+            if (moddir / name).is_file():
+                label(moddir / name, kernel_source)
+
+    print(
+        f"Labelled {len(set(owners.values()))} components as "
+        f"{len(components)} directories and {files} files."
+    )
+    if symlinks:
+        print(f"{symlinks} unclaimed symlinks have no labelled directory above them.")
+    if hardlinks:
+        mib = unshared / 1024**2
+        print(f"{hardlinks} hardlinked files ({mib:.0f} MiB) no longer share inodes.")
+
+
+def relocate_image_state() -> None:
+    """Move package manager state to /usr, see IMAGE_STATE."""
+    step("relocating package manager state to /usr/lib/sysimage")
+    SYSIMAGE.mkdir(parents=True, exist_ok=True)
+    for source, target in IMAGE_STATE.items():
+        if source.is_symlink():
+            continue
+        if source.is_dir():
+            source.move(target)
+        else:
+            target.mkdir(exist_ok=True)
+
+
+def remove_machine_identity() -> None:
+    """Delete what package postinstalls generate per machine at build time."""
+    step("removing machine identity")
+    # Empty so systemd generates a real machine ID on first boot, instead of
+    # every install sharing this one.
+    Path("/etc/machine-id").write_text("")
+
+    # Let sshd-keygen generate unique per-machine host keys on first boot.
+    for key in Path("/etc/ssh").glob("ssh_host_*"):
+        key.unlink()
+
+    # Let ssl-cert.service generate a unique per-machine snakeoil keypair on
+    # first boot.
+    for link in Path("/etc/ssl/certs").iterdir():
+        if link.is_symlink() and link.readlink() == Path("ssl-cert-snakeoil.pem"):
+            link.unlink()
+    Path("/etc/ssl/certs/ssl-cert-snakeoil.pem").unlink(missing_ok=True)
+    Path("/etc/ssl/private/ssl-cert-snakeoil.key").unlink(missing_ok=True)
+
+    # Drop the empty /etc/resolv.conf the base image ships, so systemd's stock
+    # tmpfiles rule can symlink it to the resolved stub at boot. podman run, as
+    # opposed to podman build, bind-mounts one in, and that one is not in the
+    # image.
+    resolv = Path("/etc/resolv.conf")
+    if not resolv.is_mount():
+        resolv.unlink(missing_ok=True)
+
+    # Remove the placeholder fstab too, or bootc's /etc overlay makes libmount
+    # warn "fstab has been modified" at boot.
+    Path("/etc/fstab").unlink(missing_ok=True)
+
+    # Backups and the lock the account tools leave behind, and the metadata
+    # rockcraft leaves in the Ubuntu image.
+    for name in ("passwd", "group", "shadow", "gshadow", "subuid", "subgid"):
+        Path(f"/etc/{name}-").unlink(missing_ok=True)
+    Path("/etc/.pwd.lock").unlink(missing_ok=True)
+    shutil.rmtree("/.rock", ignore_errors=True)
+
+
+def layout_toplevel() -> None:
+    """Lay out the ostree-style toplevel directories and symlinks."""
+    step("laying out the toplevel")
+    for link, target in TOPLEVEL_LINKS.items():
+        if link.is_symlink():
+            link.unlink()
+        elif link.exists():
+            shutil.rmtree(link)
+        link.symlink_to(target)
+
+    # Create /boot/EFI/Linux because the composefs digest sealed into the UKI
+    # excludes the UKI but not its parent directory.
+    shutil.rmtree("/boot", ignore_errors=True)
+    Path("/boot/EFI/Linux").mkdir(parents=True)
+    Path("/sysroot").mkdir(exist_ok=True)
+    Path("/var").mkdir(exist_ok=True)
+
+
+def patch_stock_tmpfiles() -> None:
+    """Reconcile systemd's stock tmpfiles.d with the ostree-style toplevel.
+
+    Patched in /usr rather than shadowed from /etc, which bootc treats as
+    machine-local: an override there is subject to the /etc three-way merge, so
+    a user who deletes it keeps that deletion across updates and silently loses
+    the toplevel symlinks. A package upgrade in a derived image restores these
+    files, which is why finalize patches them again on every run.
+    """
+    step("patching stock tmpfiles.d entries")
+    # "Q /home" and "q /srv" fight the /home -> /var/home and /srv -> /var/srv
+    # symlinks, and nothing else in the file applies.
+    (STOCK_TMPFILES / "home.conf").unlink(missing_ok=True)
+
+    # The credential provisioning entries write to /root, a symlink to
+    # /var/roothome. Rewriting the paths keeps the rest of the file, so
+    # provisioning systemd adds later still applies.
+    provision = STOCK_TMPFILES / "provision.conf"
+    if provision.is_file():
+        patched = provision.read_text().replace(" /root", " /var/roothome")
+        kept = [
+            line
+            for line in patched.splitlines()
+            if not line.startswith("d- /var/roothome ")
+        ]
+        provision.write_text("\n".join(kept) + "\n")
+
+
+def relocate_font_cache() -> None:
+    """Build the font cache, which a conf.d drop-in puts under /usr.
+
+    The stock cache directory is /var/cache/fontconfig, which would not reach
+    an installed system, because the image ships /var empty.
+    """
+    if shutil.which("fc-cache") is None:  # absent outside desktop images
+        return
+    step("building the font cache")
+    run("fc-cache", "--system-only", "--force")
+
+
+def declared_paths() -> set[str]:
+    """Collect every path some other tmpfiles.d file already declares.
+
+    Two files declaring the same path with different fields conflict, and
+    systemd logs that as an error, so the generated entries skip them.
+
+    Returns:
+        The declared paths.
+    """
+    declared = set()
+    for directory in (STOCK_TMPFILES, Path("/etc/tmpfiles.d")):
+        for conf in sorted(directory.glob("*.conf")) if directory.is_dir() else ():
+            if conf == VAR_TMPFILES:
+                continue
+            for line in conf.read_text().splitlines():
+                fields = line.split()
+                if len(fields) >= 2 and not line.startswith("#"):
+                    declared.add(fields[1])
+    return declared
+
+
+def var_entry(directory: Path, mode: int, user: str, group: str) -> str:
+    """Format one tmpfiles.d directory entry.
+
+    Returns:
+        The entry, as a tmpfiles.d line.
+    """
+    return f"d {directory} {mode:04o} {user} {group} -"
+
+
+def name_of(uid: int, gid: int) -> tuple[str, str]:
+    """Resolve an owning user and group, falling back to their numeric ids.
+
+    Returns:
+        The user and group names.
+    """
+    try:
+        user = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        user = str(uid)
+    try:
+        group = grp.getgrgid(gid).gr_name
+    except KeyError:
+        group = str(gid)
+    return user, group
+
+
+def write_var_tmpfiles() -> None:
+    """Record the /var directories the image ships, for tmpfiles.d to recreate.
+
+    /var is only applied at first provisioning, so a directory a package put
+    there is gone on an updated system unless something recreates it. Generated
+    rather than hand-written, so a derived image covers whatever its own
+    packages added.
+    """
+    step("generating /var tmpfiles.d entries")
+    declared = declared_paths()
+    entries: dict[str, str] = {}
+
+    # Entries an earlier finalize generated. That run emptied the directories
+    # they describe, so scanning alone would drop them.
+    if VAR_TMPFILES.is_file():
+        for line in VAR_TMPFILES.read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and not line.startswith("#"):
+                entries[fields[1]] = line
+
+    for directory, mode, owner in VAR_DIRS:
+        if str(directory) not in declared:
+            entries[str(directory)] = var_entry(
+                directory, mode, owner or "root", "root"
+            )
+
+    for directory in VAR.rglob("*"):
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        if str(directory) in declared:
+            continue
+        info = directory.lstat()
+        user, group = name_of(info.st_uid, info.st_gid)
+        entries[str(directory)] = var_entry(
+            directory, stat.S_IMODE(info.st_mode), user, group
+        )
+
+    header = (
+        "# Directories the image ships in /var, which starts empty on an\n"
+        "# installed system. Generated by bootc-ubuntu-imagectl.\n"
+    )
+    VAR_TMPFILES.write_text(
+        header + "\n".join(entries[k] for k in sorted(entries)) + "\n"
+    )
+    print(f"Recorded {len(entries)} /var directories in {VAR_TMPFILES}.")
+
+
+def empty_var() -> None:
+    """Strip /var, /run and /tmp of everything tmpfiles.d recreates at boot.
+
+    bootc expects /var empty (populated at boot via tmpfiles.d) and /run, /tmp
+    clean.
+
+    Raises:
+        OSError: If a path under /run or /tmp cannot be removed for a reason
+            other than being a mount podman put there.
+    """
+    step("emptying /var, /run and /tmp")
+    for directory in (Path("/run"), Path("/tmp")):
+        for entry in directory.iterdir():
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            except OSError as error:
+                # podman bind-mounts /run/.containerenv and /run/secrets into
+                # the build. Those are not part of the image.
+                if error.errno != errno.EBUSY:
+                    raise
+
+    var = Path("/var")
+    for entry in sorted(var.rglob("*"), reverse=True):
+        if entry.is_symlink() or entry.is_file():
+            entry.unlink()
+        elif entry.is_dir() and not any(entry.iterdir()):
+            entry.rmdir()
+
+    for directory, mode, owner in VAR_DIRS:
+        directory.mkdir(parents=True)
+        directory.chmod(mode)
+        if owner:
+            shutil.chown(directory, owner)
+    for link, target in VAR_LINKS.items():
+        link.symlink_to(target)
+    for link, target in IMAGE_STATE.items():
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target)
+
+
+def cmd_cleanup(args: argparse.Namespace) -> None:
+    """Strip build-time state and lay out the rootfs the way bootc expects."""
+    label_components(DPKG_ADMINDIR)
+    relocate_image_state()
+    remove_machine_identity()
+    layout_toplevel()
+    patch_stock_tmpfiles()
+    relocate_font_cache()
+    write_var_tmpfiles()
+    empty_var()
+
+
+def cmd_lint(args: argparse.Namespace) -> None:
+    """Run bootc container lint with warnings fatal."""
+    step("linting")
+    run("bootc", "container", "lint", "--fatal-warnings")
+
+
+def cmd_finalize(args: argparse.Namespace) -> None:
+    """Run initramfs, cleanup and lint, in that order."""
+    cmd_initramfs(args)
+    cmd_cleanup(args)
+    cmd_lint(args)
+
+
+def cmd_rechunk(args: argparse.Namespace) -> None:
+    r"""Repack an image into content-based layers with chunkah.
+
+    Runs from the image itself, with the image to repack mounted at /chunkah.
+    Writes an OCI archive to stdout, or an OCI layout given --output, which
+    avoids tarring and untarring the whole image:
+
+        podman run --rm --mount=type=image,src=IMAGE,dst=/chunkah \\
+            -e CHUNKAH_CONFIG_STR="$(podman inspect IMAGE)" -v "$PWD:/out:z" \\
+            IMAGE /usr/libexec/bootc-ubuntu-imagectl rechunk \\
+                --output oci:/out/layout --tag IMAGE
+        podman pull "oci:$PWD/layout:IMAGE"
+
+    chunkah only sees the mounted filesystem, so the image configuration
+    (labels, annotations, entrypoint) has to be handed to it through
+    CHUNKAH_CONFIG_STR or it is lost.
+    """
+    if not (CHUNKAH_ROOTFS / "usr").is_dir():
+        die(f"no rootfs mounted at {CHUNKAH_ROOTFS}")
+    if "CHUNKAH_CONFIG_STR" not in os.environ:
+        if args.tag:
+            die("CHUNKAH_CONFIG_STR unset, the image would lose its labels")
+        step("CHUNKAH_CONFIG_STR unset, the image loses its labels")
+    command = [
+        "chunkah",
+        "build",
+        "--rootfs",
+        str(CHUNKAH_ROOTFS),
+        "--max-layers",
+        str(args.max_layers),
+    ]
+    if args.output:
+        command += ["--output", args.output]
+    if args.tag:
+        command += ["--tag", args.tag]
+    for path in args.prune:
+        command += ["--prune", path]
+    os.execvp(command[0], command)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse the command line.
+
+    Returns:
+        The parsed arguments, with the chosen subcommand in `func`.
+    """
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    commands = parser.add_subparsers(required=True, metavar="COMMAND")
+
+    for name, func in (
+        ("initramfs", cmd_initramfs),
+        ("cleanup", cmd_cleanup),
+        ("lint", cmd_lint),
+        ("finalize", cmd_finalize),
+    ):
+        sub = commands.add_parser(name, help=summary(func))
+        sub.set_defaults(func=func)
+
+    rechunk = commands.add_parser(
+        "rechunk",
+        help=summary(cmd_rechunk),
+        description=cmd_rechunk.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rechunk.add_argument(
+        "--max-layers", type=int, default=128, help="layers to pack into (default: 128)"
+    )
+    rechunk.add_argument(
+        "--output",
+        metavar="[oci:|oci-archive:]PATH",
+        help="write the image here instead of to stdout",
+    )
+    rechunk.add_argument(
+        "--prune",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="exclude PATH from the image, may be repeated",
+    )
+    rechunk.add_argument("--tag", help="name podman load gives the image")
+    rechunk.set_defaults(func=cmd_rechunk)
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Run the requested subcommand."""
+    if os.geteuid() != 0:
+        die("must run as root")
+    args = parse_args()
+    try:
+        args.func(args)
+    except subprocess.CalledProcessError as error:
+        die(f"{error.cmd[0]} failed with exit status {error.returncode}")
+
+
+if __name__ == "__main__":
+    main()

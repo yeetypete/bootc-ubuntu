@@ -1,6 +1,7 @@
 image.oci
 *.img
-__pycache__/
 *.iso
 *.iso.sha256
 .live/
+__pycache__/
+.venv/

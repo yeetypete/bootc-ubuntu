@@ -1,14 +1,16 @@
 # bootc-ubuntu developer tasks.
 
-# Image repository for the built image.
-image := "yeetypete/bootc-ubuntu"
+# Image repository for the built desktop image.
+image := "yeetypete/bootc-ubuntu-desktop"
+# Image repository for the base image the desktop image derives from.
+base_image := "yeetypete/bootc-ubuntu"
 # Version for image labels and the tag suffix, without its leading "v".
 version := trim_start_match("v0.0.0", "v")
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
 # Short SHA for tags.
 short_revision := replace_regex(revision, '^(.{7}).*$', '$1')
-# Commit date, recorded as the image creation annotation.
+# Commit date, recorded as the image creation time.
 created := `git log -1 --pretty=%cI 2>/dev/null || echo ""`
 # Tag the image is built with.
 tag := "26.04"
@@ -27,14 +29,26 @@ build_tag := if release == "true" { tag } else { tag + "-" + short_revision }
 revision_imgref := imgref + "-" + short_revision
 # Registry reference for a tagged release.
 version_imgref := imgref + "-" + version
+# The same references for the base image.
+base_imgref := "docker.io/" + base_image + ":" + tag
+base_revision_imgref := base_imgref + "-" + short_revision
+base_version_imgref := base_imgref + "-" + version
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
-created_args := if created == "" { "" } else { "--annotation org.opencontainers.image.created=" + created }
-# Container image providing chunkah, which repacks the image into content-based
-# layers so that an update ships only the packages that changed.
-chunkah := "quay.io/coreos/chunkah:v0.6.0"
-# Maximum number of layers chunkah packs the image into.
-max_layers := "128"
-# The rootfs as built, before chunking and sealing.
+created_label := if created == "" { "" } else { "--label org.opencontainers.image.created=" + created }
+labels := created_label + \
+    " --label org.opencontainers.image.version=" + version + \
+    " --label org.opencontainers.image.revision=" + revision
+base_labels := labels + \
+    " --label org.opencontainers.image.title=bootc-ubuntu" + \
+    " --label 'org.opencontainers.image.description=Ubuntu 26.04 as a bootc base image'"
+desktop_labels := labels + \
+    " --label org.opencontainers.image.title=bootc-ubuntu-desktop" + \
+    " --label 'org.opencontainers.image.description=Ubuntu 26.04 GNOME desktop as a bootc image'"
+# The base rootfs as built, before chunking.
+base_target := "localhost/bootc-ubuntu-base-target:" + tag
+# The base image, chunked.
+base_chunked := "localhost/bootc-ubuntu-base:" + tag
+# The desktop rootfs as built, before chunking and sealing.
 target := "localhost/bootc-ubuntu-target:" + tag
 # The rootfs repacked into content-based layers, which the UKI is sealed against.
 chunked := "localhost/bootc-ubuntu-chunked:" + tag
@@ -56,46 +70,60 @@ graphics := if display == "none" { "-nographic" } else { "-vga none -device virt
 default:
     @just --list
 
-# Build the bootc container image in three steps:
+# Repack `src` into content-based layers, tagged `dst`.
+[private]
+chunk src dst *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    work=$(mktemp -d -p /var/tmp)
+    trap 'rm -rf "${work}"' EXIT
+    config=$(podman inspect {{ src }})
+    podman run --rm \
+        --mount=type=image,src={{ src }},dst=/chunkah \
+        -e CHUNKAH_CONFIG_STR="${config}" \
+        -v "${work}:/out:z" \
+        {{ src }} /usr/libexec/bootc-ubuntu-imagectl rechunk \
+            --output oci:/out/layout \
+            --tag {{ dst }} \
+            {{ args }}
+    podman pull --quiet "oci:${work}/layout:{{ dst }}"
+
+# Build the base image: the finalized rootfs, repacked into content-based layers.
+[group('image')]
+build-base *args:
+    podman build --jobs 0 --target base-rootfs \
+        {{ base_labels }} \
+        --timestamp 0 \
+        {{ cache_args }} \
+        --tag {{ base_target }} \
+        {{ args }} .
+    just chunk {{ base_target }} {{ base_chunked }}
+    podman tag {{ base_chunked }} {{ base_imgref }} {{ base_revision_imgref }}
+
+# Build the desktop image from the base image in three steps:
 #
-# 1. Build the rootfs.
+# 1. Build the rootfs, derived from the base image.
 # 2. Repack it into content-based layers.
 # 3. Seal the repacked rootfs into the UKI and assemble the final image.
 #
 # chunkah runs before the UKI is sealed because it rewrites the file mtimes that
 # the sealed composefs digest covers.
+[doc('Build the desktop image from the base image.')]
 [group('image')]
-build *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
+build *args: build-base
     podman build --jobs 0 --target kernel-split \
-        --label org.opencontainers.image.version={{ version }} \
-        --label org.opencontainers.image.revision={{ revision }} \
+        --build-arg BASE_IMAGE={{ base_chunked }} \
         --timestamp 0 \
         {{ cache_args }} \
         --tag {{ target }} \
         {{ args }} .
-    # chunkah only sees the mounted filesystem, so labels and annotations have to
-    # be handed to it or they are lost.
-    work=$(mktemp -d -p /var/tmp)
-    trap 'rm -rf "${work}"' EXIT
-    config=$(podman inspect {{ target }})
-    podman run --rm \
-        --mount=type=image,src={{ target }},dst=/chunkah \
-        -e CHUNKAH_CONFIG_STR="${config}" \
-        -v "${work}:/out:z" \
-        {{ chunkah }} build \
-            --max-layers {{ max_layers }} \
-            --source-date-epoch 0 \
-            --prune /kernel \
-            --tag {{ chunked }} \
-            --output oci:/out/layout
-    podman pull --quiet "oci:${work}/layout:{{ chunked }}"
+    just chunk {{ target }} {{ chunked }} --prune /kernel
     podman build --jobs 0 --target image \
-        --timestamp 0 \
+        --build-arg BASE_IMAGE={{ base_chunked }} \
         --build-context chunked=container-image://{{ chunked }} \
+        {{ desktop_labels }} \
+        --timestamp 0 \
         {{ cache_args }} \
-        {{ created_args }} \
         --tag {{ imgref }} \
         --tag {{ revision_imgref }} \
         {{ args }} .
@@ -106,14 +134,18 @@ oci: build
     rm -rf {{ oci_dir }}
     podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ build_tag }}
 
-# Push the image to its registry under the commit it was built from.
+# Push the images to their registries under the commit they were built from.
 [group('image')]
 push: build
+    podman push --compression-format zstd --force-compression {{ base_revision_imgref }}
     podman push --compression-format zstd --force-compression {{ revision_imgref }}
 
 # Publish a tagged release.
 [group('image')]
 push-release: push
+    podman tag {{ base_revision_imgref }} {{ base_version_imgref }}
+    podman push --compression-format zstd --force-compression {{ base_version_imgref }}
+    podman push --compression-format zstd --force-compression {{ base_imgref }}
     podman tag {{ revision_imgref }} {{ version_imgref }}
     podman push --compression-format zstd --force-compression {{ version_imgref }}
     podman push --compression-format zstd --force-compression {{ imgref }}
