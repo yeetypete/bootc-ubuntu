@@ -206,7 +206,9 @@ disk-script: oci
     #!/usr/bin/env bash
     set -euo pipefail
     rm -f {{ disk_img }}
-    install="sudo bash /run/virtiofs-mnt-repo/install.sh \
+    # Point podman at the host's image store, which bcvk mounts read-only.
+    install="sudo CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/tests/vm-storage.conf \
+    bash /run/virtiofs-mnt-repo/install.sh \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
     /dev/disk/by-id/virtio-target"
     bcvk ephemeral run-ssh --rm \
