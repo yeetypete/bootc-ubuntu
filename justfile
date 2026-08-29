@@ -211,7 +211,7 @@ disk: oci
     install="/usr/libexec/bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
     oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ variant_imgref }}"
-    just install-vm "$install"
+    just variant={{ variant }} install-vm "$install"
 
 # Install to a disk image through install.sh.
 [group('disk')]
@@ -224,7 +224,7 @@ disk-script: oci
     --image {{ variant_imgref }} \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
     /dev/disk/by-id/virtio-target"
-    just install-vm "$install" --bind-storage-ro --add-swap 8G
+    just variant={{ variant }} install-vm "$install" --bind-storage-ro --add-swap 8G
 
 # Boot the disk image from `just disk`.
 [group('disk')]
