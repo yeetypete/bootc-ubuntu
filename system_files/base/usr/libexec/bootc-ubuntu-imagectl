@@ -30,9 +30,8 @@ VAR_TMPFILES = STOCK_TMPFILES / "bootc-ubuntu-var.conf"
 DPKG_ADMINDIR = Path("/var/lib/dpkg")
 SYSIMAGE = Path("/usr/lib/sysimage")
 
-# Package manager state that describes the image rather than the machine. It
-# lives under /usr so it survives updates, since /var is only applied at first
-# provisioning. Symlinks put it back where the tools look for it.
+# Package manager state that describes the image. It lives under /usr
+# so it survives updates. Symlinks put it back where programs expect it.
 IMAGE_STATE = {
     DPKG_ADMINDIR: SYSIMAGE / "dpkg",
     Path("/var/lib/pam"): SYSIMAGE / "pam",
@@ -44,8 +43,8 @@ IMAGE_STATE = {
     / "deb-systemd-user-helper-enabled",
 }
 
-# Toplevel symlink to the /var directory backing it, laid out the way ostree
-# and bootc expect. tmpfiles.d creates the targets at boot.
+# Toplevel symlinks, following a bootc/ostree layout. tmpfiles.d creates
+# their targets at boot.
 TOPLEVEL_LINKS = {
     Path("/home"): "var/home",
     Path("/root"): "var/roothome",
@@ -62,18 +61,14 @@ VAR_LINKS = {
     Path("/var/lock"): "../run/lock",
 }
 
-# What a finalized image keeps in /var, so apt and dracut can run again in a
-# derived image. tmpfiles.d recreates all of it at boot.
-VAR_DIRS = [
-    (Path("/var/tmp"), 0o1777, None),
-    (Path("/var/log/apt"), 0o755, None),
-    (Path("/var/cache/apt"), 0o755, None),
-    (Path("/var/cache/apt/archives"), 0o755, None),
-    (Path("/var/cache/apt/archives/partial"), 0o700, "_apt"),
-    (Path("/var/lib/apt"), 0o755, None),
-    (Path("/var/lib/apt/lists"), 0o755, None),
-    (Path("/var/lib/apt/lists/partial"), 0o700, "_apt"),
-]
+# What a finalized image keeps in /var, and the mode to keep it at. tmpfiles.d
+# recreates these directories at boot.
+VAR_DIRS = {
+    # dracut refuses to run without a tmpdir.
+    Path("/var/tmp"): 0o1777,
+    # apt exits 100 on a missing /var/log.
+    Path("/var/log/apt"): 0o755,
+}
 
 VAR = Path("/var")
 
@@ -125,8 +120,8 @@ def cmd_initramfs(args: argparse.Namespace) -> None:
     moddir = MODULES / kver
     step(f"building the initramfs for {kver}")
 
-    # A freshly installed kernel package leaves vmlinuz in /boot. An already
-    # finalized image has it in the modules directory.
+    # bootc looks for the kernel at /usr/lib/modules/<kver>/vmlinuz, where the
+    # Ubuntu package does not put it.
     boot_vmlinuz = Path(f"/boot/vmlinuz-{kver}")
     if boot_vmlinuz.is_file():
         boot_vmlinuz.copy(moddir / "vmlinuz", preserve_metadata=True)
@@ -134,8 +129,6 @@ def cmd_initramfs(args: argparse.Namespace) -> None:
         fail(f"no kernel image for {kver}")
 
     subprocess.run(["depmod", kver], check=True)
-    # The component xattrs an earlier finalize left on the rootfs must not end
-    # up in the initramfs.
     subprocess.run(
         [
             "dracut",
@@ -149,7 +142,6 @@ def cmd_initramfs(args: argparse.Namespace) -> None:
             str(moddir / "initramfs.img"),
         ],
         check=True,
-        env=os.environ | {"DRACUT_NO_XATTR": "1"},
     )
     (moddir / "initramfs.img").chmod(0o600)
 
@@ -394,13 +386,7 @@ def layout_toplevel() -> None:
 
 
 def patch_stock_tmpfiles() -> None:
-    """Reconcile systemd's stock tmpfiles.d with the ostree-style toplevel.
-
-    Patched under /usr rather than overridden from /etc, where bootc's
-    three-way merge would let a user delete the override and silently lose the
-    toplevel symlinks. A package upgrade in a derived image restores these
-    files, so finalize patches them again on every run.
-    """
+    """Reconcile systemd's stock tmpfiles.d with the ostree-style toplevel."""
     step("patching stock tmpfiles.d entries")
     # "Q /home" and "q /srv" fight the /home -> /var/home and /srv -> /var/srv
     # symlinks, and nothing else in the file applies.
@@ -500,8 +486,7 @@ def write_var_tmpfiles() -> None:
     """Record what the image ships in /var, for tmpfiles.d to recreate.
 
     /var is only applied at first provisioning, so a directory a package put
-    there is gone on an updated system unless something recreates it. Generated
-    rather than hand-written so a derived image covers its own packages too.
+    there is gone on an updated system unless something recreates it.
     """
     step("generating /var tmpfiles.d entries")
     declared = declared_paths()
@@ -514,11 +499,6 @@ def write_var_tmpfiles() -> None:
             fields = line.split()
             if len(fields) >= 2 and not line.startswith("#"):
                 entries[fields[1]] = line
-
-    for directory, mode, owner in VAR_DIRS:
-        path = tmpfiles_path(directory)
-        if path not in declared:
-            entries[path] = var_entry(path, mode, owner or "root", "root")
 
     for directory in VAR.rglob("*"):
         if directory.is_symlink() or not directory.is_dir():
@@ -563,7 +543,7 @@ def empty_var() -> None:
                     entry.unlink()
             except OSError as error:
                 # podman bind-mounts /run/.containerenv and /run/secrets into
-                # the build. Neither is part of the image.
+                # the build.
                 if error.errno != errno.EBUSY:
                     raise
 
@@ -573,11 +553,9 @@ def empty_var() -> None:
         else:
             entry.unlink()
 
-    for directory, mode, owner in VAR_DIRS:
+    for directory, mode in VAR_DIRS.items():
         directory.mkdir(parents=True)
         directory.chmod(mode)
-        if owner:
-            shutil.chown(directory, owner)
     for link, target in VAR_LINKS.items():
         link.symlink_to(target)
     for link, target in IMAGE_STATE.items():
@@ -623,9 +601,7 @@ def cmd_rechunk(args: argparse.Namespace) -> None:
                 --output oci:/out/layout --tag IMAGE
         podman pull "oci:$PWD/layout:IMAGE"
 
-    chunkah only sees the mounted filesystem, so the image configuration has
-    to be handed to it through CHUNKAH_CONFIG_STR or the labels, annotations
-    and entrypoint are lost.
+    Image configuration must be handed to chunkah through CHUNKAH_CONFIG_STR.
     """
     if not (CHUNKAH_ROOTFS / "usr").is_dir():
         fail(f"no rootfs mounted at {CHUNKAH_ROOTFS}")
