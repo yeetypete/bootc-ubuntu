@@ -115,6 +115,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     less \
     linux-image-generic \
     netplan.io \
+    network-manager \
     nftables \
     openssh-server \
     ostree \
@@ -146,8 +147,8 @@ RUN userdel ubuntu && \
     pam-auth-update --enable mkhomedir
 
 RUN systemctl enable \
+    NetworkManager.service \
     ssh.service \
-    systemd-networkd.service \
     systemd-resolved.service \
     systemd-timesyncd.service \
     tmp.mount && \

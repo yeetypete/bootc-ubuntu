@@ -1,8 +1,6 @@
-# Wired DHCP, so a freshly installed system can reach its registry to update.
-# A derived image picks its own renderer by shipping a file that sorts later.
 network:
   version: 2
-  renderer: networkd
+  renderer: NetworkManager
   ethernets:
     all-en:
       match:
