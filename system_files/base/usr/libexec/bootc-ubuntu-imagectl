@@ -170,7 +170,6 @@ class LabelCounts(NamedTuple):
 
 
 COMPONENT_XATTR = "user.component"
-UPDATE_INTERVAL_XATTR = "user.update-interval"
 
 # dpkg-query interprets the backslash escapes itself.
 QUERY_FORMAT = r"${binary:Package}\t${source:Package}\t${db:Status-Status}\n"
@@ -258,28 +257,9 @@ def wholly_owned_dirs(owners: Owners) -> Components:
     return {d: next(iter(sources[d])) for d in owned if d.parent not in owned}
 
 
-def update_interval(source: str) -> str:
-    """Judge roughly how often a source package changes, which chunkah packs by.
-
-    Rarely changing components share layers, so an update ships as few as
-    possible.
-
-    Returns:
-        A chunkah update interval.
-    """
-    if source.startswith(("fonts-", "firmware-", "linux-firmware")) or source.endswith(
-        ("-data", "-theme", "-icon-theme", "-wallpapers")
-    ):
-        return "quarterly"
-    if source.startswith("linux"):
-        return "weekly"
-    return "monthly"
-
-
 def label(path: str | os.PathLike[str], source: str) -> None:
     """Tag a path with the component chunkah should pack it with."""
     os.setxattr(path, COMPONENT_XATTR, source.encode())
-    os.setxattr(path, UPDATE_INTERVAL_XATTR, update_interval(source).encode())
 
 
 def apply_labels(owners: Owners, components: Components) -> LabelCounts:
