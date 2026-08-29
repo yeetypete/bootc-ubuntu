@@ -30,8 +30,8 @@ MAPPING = "bootc-ubuntu-root"
 def partition_of_type(device: Path, type_guid: str) -> Path:
     """Find a partition by its type GUID, reading the partition table directly.
 
-    This runs inside a podman container, where the host's udev cannot be
-    waited on, so use sfdisk.
+    sfdisk reads the disk itself, so the lookup does not depend on udev having
+    caught up with the new partitions. wait_for does that part.
 
     Returns:
         The path of the matching partition.
@@ -46,6 +46,16 @@ def partition_of_type(device: Path, type_guid: str) -> Path:
         if part.get("type", "").lower() == type_guid:
             return Path(part["node"])
     sys.exit(f"no partition of type {type_guid} on {device}.")
+
+
+def wait_for(node: Path, timeout: int = 10) -> Path:
+    """Wait for udev to create a partition's device symlink.
+
+    Returns:
+        The path, once it exists.
+    """
+    subprocess.run(["udevadm", "wait", f"--timeout={timeout}", node], check=True)
+    return node
 
 
 def prompt_passphrase() -> str:
@@ -127,8 +137,8 @@ def install(
         env=os.environ | {"SYSTEMD_REPART_MKFS_OPTIONS_EXT4": "-O verity"},
     )
 
-    esp = partition_of_type(device, ESP_TYPE)
-    root = partition_of_type(device, ROOT_TYPE)
+    esp = wait_for(partition_of_type(device, ESP_TYPE))
+    root = wait_for(partition_of_type(device, ROOT_TYPE))
 
     print(f"Unlocking {root}")
     subprocess.run(
