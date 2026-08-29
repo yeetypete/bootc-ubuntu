@@ -30,10 +30,9 @@ VAR_TMPFILES = STOCK_TMPFILES / "bootc-ubuntu-var.conf"
 DPKG_ADMINDIR = Path("/var/lib/dpkg")
 SYSIMAGE = Path("/usr/lib/sysimage")
 
-# Package manager state that describes the image rather than the machine,
-# relocated to /usr so it persists across image updates: /var is only applied
-# at first provisioning. Symlinks, recreated by a tmpfiles.d rule at boot, keep
-# dpkg, apt, debconf, ucf, pam-auth-update and deb-systemd-helper working.
+# Package manager state that describes the image rather than the machine. It
+# lives under /usr so it survives updates, since /var is only applied at first
+# provisioning. Symlinks put it back where the tools look for it.
 IMAGE_STATE = {
     DPKG_ADMINDIR: SYSIMAGE / "dpkg",
     Path("/var/lib/pam"): SYSIMAGE / "pam",
@@ -56,8 +55,8 @@ TOPLEVEL_LINKS = {
     Path("/ostree"): "sysroot/ostree",
 }
 
-# Symlinks systemd's stock tmpfiles.d recreate at boot, kept so a derived image
-# has them between finalize and its own package installs.
+# Symlinks systemd recreates at boot, kept so a derived image has them between
+# finalize and its own package installs.
 VAR_LINKS = {
     Path("/var/run"): "../run",
     Path("/var/lock"): "../run/lock",
@@ -96,7 +95,7 @@ def summary(command: Callable[[argparse.Namespace], None]) -> str:
     """Summarise a subcommand for --help.
 
     Returns:
-        The first line of the subcommand's docstring, empty if it has none.
+        The first line of its docstring.
     """
     doc = command.__doc__
     return doc.splitlines()[0] if doc else ""
@@ -176,8 +175,8 @@ UPDATE_INTERVAL_XATTR = "user.update-interval"
 # dpkg-query interprets the backslash escapes itself.
 QUERY_FORMAT = r"${binary:Package}\t${source:Package}\t${db:Status-Status}\n"
 
-# States in which a package's files are on disk. A package awaiting a trigger is
-# still installed.
+# States in which a package's files are on disk. One awaiting a trigger still
+# counts as installed.
 INSTALLED_STATES = frozenset({"installed", "triggers-awaiting", "triggers-pending"})
 
 
@@ -185,7 +184,7 @@ def source_packages(admindir: Path) -> dict[str, str]:
     """Map each installed binary package to its source package.
 
     Returns:
-        Binary package name to source package name.
+        Each binary package name and its source.
     """
     listing = subprocess.run(
         ["dpkg-query", f"--admindir={admindir}", "-f", QUERY_FORMAT, "-W"],
@@ -205,11 +204,11 @@ def source_packages(admindir: Path) -> dict[str, str]:
 def canonical_dir(directory: Path) -> Path:
     """Resolve the merged-/usr aliases, so /lib/firmware is /usr/lib/firmware.
 
-    Otherwise the few packages still recording paths under /lib look like the
-    sole owners of /lib, and labelling it labels /usr/lib.
+    Without this the few packages still recording paths under /lib look like
+    the sole owners of /lib, and labelling it labels /usr/lib.
 
     Returns:
-        The directory with every symlink along it resolved.
+        The resolved directory.
     """
     return directory.resolve()
 
@@ -217,12 +216,12 @@ def canonical_dir(directory: Path) -> Path:
 def owned_paths(admindir: Path, source_of: dict[str, str]) -> tuple[Owners, list[str]]:
     """Map every file and symlink dpkg records to its source package.
 
-    Directories are skipped, because dpkg lists a shared directory under every
-    package installing into it. Absent paths are skipped too, since the base
-    image's dpkg excludes drop man pages, locales and documentation.
+    Directories are skipped, since dpkg lists a shared one under every package
+    installing into it. So are absent paths, which the base image's dpkg
+    excludes drop.
 
     Returns:
-        The owned paths, and the packages with no known source package.
+        The owned paths, and the packages with no known source.
     """
     owners: Owners = {}
     unknown = []
@@ -248,7 +247,7 @@ def wholly_owned_dirs(owners: Owners) -> Components:
     xattr here stands in for thousands below.
 
     Returns:
-        Directory to the source package owning its whole subtree.
+        Each directory and the source owning it.
     """
     sources: dict[PurePosixPath, set[str]] = defaultdict(set)
     for path, source in owners.items():
@@ -262,8 +261,8 @@ def wholly_owned_dirs(owners: Owners) -> Components:
 def update_interval(source: str) -> str:
     """Judge roughly how often a source package changes, which chunkah packs by.
 
-    Rarely changing components share layers with each other, so an update
-    ships as few layers as possible.
+    Rarely changing components share layers, so an update ships as few as
+    possible.
 
     Returns:
         A chunkah update interval.
@@ -287,7 +286,7 @@ def apply_labels(owners: Owners, components: Components) -> LabelCounts:
     """Write the component xattr onto each directory and the paths it misses.
 
     Returns:
-        What the pass labelled, and what it could not.
+        What the pass labelled and what it could not.
     """
     for directory, source in components.items():
         label(directory, source)
@@ -372,8 +371,8 @@ def relocate_image_state() -> None:
 def remove_machine_identity() -> None:
     """Delete what package postinstalls generate per machine at build time."""
     step("removing machine identity")
-    # Empty so systemd generates a real machine ID on first boot, instead of
-    # every install sharing this one.
+    # Empty so systemd generates one on first boot rather than every install
+    # sharing this one.
     Path("/etc/machine-id").write_text("")
 
     # Let sshd-keygen generate unique per-machine host keys on first boot.
@@ -388,10 +387,9 @@ def remove_machine_identity() -> None:
     Path("/etc/ssl/certs/ssl-cert-snakeoil.pem").unlink(missing_ok=True)
     Path("/etc/ssl/private/ssl-cert-snakeoil.key").unlink(missing_ok=True)
 
-    # Drop the empty /etc/resolv.conf the base image ships, so systemd's stock
-    # tmpfiles rule can symlink it to the resolved stub at boot. podman run, as
-    # opposed to podman build, bind-mounts one in, and that one is not in the
-    # image.
+    # Drop the empty /etc/resolv.conf the base image ships so systemd can
+    # symlink it to the resolved stub at boot. podman run bind-mounts one in,
+    # unlike podman build, and that one is not part of the image.
     resolv = Path("/etc/resolv.conf")
     if not resolv.is_mount():
         resolv.unlink(missing_ok=True)
@@ -429,11 +427,10 @@ def layout_toplevel() -> None:
 def patch_stock_tmpfiles() -> None:
     """Reconcile systemd's stock tmpfiles.d with the ostree-style toplevel.
 
-    Patched in /usr rather than shadowed from /etc, which bootc treats as
-    machine-local: an override there is subject to the /etc three-way merge, so
-    a user who deletes it keeps that deletion across updates and silently loses
-    the toplevel symlinks. A package upgrade in a derived image restores these
-    files, which is why finalize patches them again on every run.
+    Patched under /usr rather than overridden from /etc, where bootc's
+    three-way merge would let a user delete the override and silently lose the
+    toplevel symlinks. A package upgrade in a derived image restores these
+    files, so finalize patches them again on every run.
     """
     step("patching stock tmpfiles.d entries")
     # "Q /home" and "q /srv" fight the /home -> /var/home and /srv -> /var/srv
@@ -441,13 +438,12 @@ def patch_stock_tmpfiles() -> None:
     (STOCK_TMPFILES / "home.conf").unlink(missing_ok=True)
 
     # The credential provisioning entries write to /root, a symlink to
-    # /var/roothome. Rewriting the paths keeps the rest of the file, so
-    # provisioning systemd adds later still applies.
+    # /var/roothome. Rewriting the paths keeps the rest of the file working.
     provision = STOCK_TMPFILES / "provision.conf"
     if provision.is_file():
         patched = provision.read_text().replace(" /root", " /var/roothome")
         # bootc-ubuntu-base-dirs.conf declares /var/roothome already, and
-        # systemd warns about the duplicate on every boot.
+        # systemd warns about the duplicate at boot.
         kept = [
             line
             for line in patched.splitlines()
@@ -459,8 +455,8 @@ def patch_stock_tmpfiles() -> None:
 def relocate_font_cache() -> None:
     """Build the font cache, which a conf.d drop-in puts under /usr.
 
-    The stock cache directory is /var/cache/fontconfig, which would not reach
-    an installed system, because the image ships /var empty.
+    The stock /var/cache/fontconfig would not reach an installed system, which
+    starts with /var empty.
     """
     if shutil.which("fc-cache") is None:  # absent outside desktop images
         return
@@ -487,8 +483,8 @@ def tmpfiles_path(directory: Path) -> str:
 def declared_paths() -> set[str]:
     """Collect every path some other tmpfiles.d file already declares.
 
-    Two files declaring the same path with different fields conflict, and
-    systemd logs that as an error, so the generated entries skip them.
+    systemd warns about a duplicate and ignores one of the two, so the
+    generated entries skip these.
 
     Returns:
         The declared paths.
@@ -509,7 +505,7 @@ def var_entry(path: str, mode: int, user: str, group: str) -> str:
     """Format one tmpfiles.d directory entry.
 
     Returns:
-        The entry, as a tmpfiles.d line.
+        The entry as a line.
     """
     return f"d {path} {mode:04o} {user} {group} -"
 
@@ -536,8 +532,7 @@ def write_var_tmpfiles() -> None:
 
     /var is only applied at first provisioning, so a directory a package put
     there is gone on an updated system unless something recreates it. Generated
-    rather than hand-written, so a derived image covers whatever its own
-    packages added.
+    rather than hand-written so a derived image covers its own packages too.
     """
     step("generating /var tmpfiles.d entries")
     declared = declared_paths()
@@ -579,9 +574,6 @@ def write_var_tmpfiles() -> None:
 def empty_var() -> None:
     """Strip /var, /run and /tmp of everything tmpfiles.d recreates at boot.
 
-    bootc expects /var empty (populated at boot via tmpfiles.d) and /run, /tmp
-    clean.
-
     Raises:
         OSError: If a path cannot be removed, other than a mount podman put
             under /run or /tmp.
@@ -596,7 +588,7 @@ def empty_var() -> None:
                     entry.unlink()
             except OSError as error:
                 # podman bind-mounts /run/.containerenv and /run/secrets into
-                # the build. Those are not part of the image.
+                # the build. Neither is part of the image.
                 if error.errno != errno.EBUSY:
                     raise
 
@@ -650,15 +642,15 @@ def cmd_rechunk(args: argparse.Namespace) -> None:
     Writes an OCI archive to stdout, or an OCI layout given --output, which
     avoids tarring and untarring the whole image:
 
-        podman run --rm --mount=type=image,src=IMAGE,dst=/chunkah \\
-            -e CHUNKAH_CONFIG_STR="$(podman inspect IMAGE)" -v "$PWD:/out:z" \\
-            IMAGE /usr/libexec/bootc-ubuntu-imagectl rechunk \\
+        podman run --rm --mount=type=image,src=IMAGE,dst=/chunkah \
+            -e CHUNKAH_CONFIG_STR="$(podman inspect IMAGE)" -v "$PWD:/out:z" \
+            IMAGE /usr/libexec/bootc-ubuntu-imagectl rechunk \
                 --output oci:/out/layout --tag IMAGE
         podman pull "oci:$PWD/layout:IMAGE"
 
-    chunkah only sees the mounted filesystem, so the image configuration
-    (labels, annotations, entrypoint) has to be handed to it through
-    CHUNKAH_CONFIG_STR or it is lost.
+    chunkah only sees the mounted filesystem, so the image configuration has
+    to be handed to it through CHUNKAH_CONFIG_STR or the labels, annotations
+    and entrypoint are lost.
     """
     if not (CHUNKAH_ROOTFS / "usr").is_dir():
         fail(f"no rootfs mounted at {CHUNKAH_ROOTFS}")
