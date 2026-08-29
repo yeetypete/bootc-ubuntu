@@ -223,7 +223,7 @@ disk: oci
     # bcvk creates the image when it is missing, so removing it clears the
     # previous run's partition table.
     rm -f {{ disk_img }}
-    install="bootc-ubuntu-install \
+    install="/usr/libexec/bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
     oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ imgref }}"
     bcvk ephemeral run-ssh --rm \

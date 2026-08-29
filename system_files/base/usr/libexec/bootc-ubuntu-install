@@ -7,7 +7,7 @@ image as a container, against a disk on the host:
 
     podman run --rm -it --privileged --pid=host --ipc=host \\
       -v /dev:/dev -v /run/udev:/run/udev:ro \\
-      IMAGE bootc-ubuntu-install /dev/nvme0n1 IMGREF
+      IMAGE /usr/libexec/bootc-ubuntu-install /dev/nvme0n1 IMGREF
 """
 
 import argparse

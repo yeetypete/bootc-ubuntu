@@ -31,6 +31,6 @@ docstring-code-format = true
 preset = "strict"
 min-severity = "ignore"
 project-includes = [
-  "system_files/base/usr/bin/bootc-ubuntu-install",
+  "system_files/base/usr/libexec/bootc-ubuntu-install",
   "system_files/base/usr/libexec/bootc-ubuntu-imagectl",
 ]

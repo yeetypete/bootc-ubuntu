@@ -84,4 +84,4 @@ exec podman run --rm -it --privileged --pid=host --ipc=host \
     -v /dev:/dev -v /run/udev:/run/udev:ro \
     -v /var/lib/containers:/var/lib/containers \
     "${volumes[@]}" \
-    "${IMAGE}" bootc-ubuntu-install "${disk}" "${SOURCE}" "${IMAGE}"
+    "${IMAGE}" /usr/libexec/bootc-ubuntu-install "${disk}" "${SOURCE}" "${IMAGE}"
