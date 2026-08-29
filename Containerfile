@@ -122,6 +122,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     podman \
     python3 \
     skopeo \
+    sudo \
     systemd \
     systemd-boot \
     systemd-cryptsetup \
