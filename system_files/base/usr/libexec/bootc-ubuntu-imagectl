@@ -663,6 +663,8 @@ def cmd_rechunk(args: argparse.Namespace) -> None:
         str(CHUNKAH_ROOTFS),
         "--max-layers",
         str(args.max_layers),
+        "--source-date-epoch",
+        str(args.source_date_epoch),
     ]
     if args.output:
         command += ["--output", args.output]
@@ -700,7 +702,17 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     rechunk.add_argument(
-        "--max-layers", type=int, default=128, help="layers to pack into (default: 128)"
+        "--max-layers",
+        type=int,
+        default=128,
+        help="layers to pack into (default: %(default)s)",
+    )
+    rechunk.add_argument(
+        "--source-date-epoch",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="timestamp for the layers and the files in them (default: %(default)s)",
     )
     rechunk.add_argument(
         "--output",
