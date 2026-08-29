@@ -58,9 +58,13 @@ ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVM
 # Base name of the generated disk image.
 name := "bootc-ubuntu"
 # Disk image `just disk` installs to, and `just boot` boots. bcvk sizes it for us.
-disk_img := name + ".img"
+disk_img := if variant == "base" { name + "-base.img" } else { name + ".img" }
 # Account provisioned into a test VM.
 user := "ubuntu"
+# Which image the vm recipe builds and boots, "desktop" or "base".
+variant := "desktop"
+variant_imgref := if variant == "base" { base_imgref } else { imgref }
+variant_build := if variant == "base" { "build-base" } else { "build" }
 # QEMU display for the VM recipes. "none" keeps the console on this terminal;
 # set display=gtk for a window, the only way to see the desktop.
 display := "none"
@@ -130,9 +134,10 @@ build *args: build-base
 
 # Export the bootc container image as an OCI directory.
 [group('image')]
-oci: build
+oci:
+    just {{ variant_build }}
     rm -rf {{ oci_dir }}
-    podman push --quiet --compression-format zstd {{ imgref }} oci:{{ oci_dir }}:{{ build_tag }}
+    podman push --quiet --compression-format zstd {{ variant_imgref }} oci:{{ oci_dir }}:{{ build_tag }}
 
 # Push the images to their registries under the commit they were built from.
 [group('image')]
@@ -201,9 +206,10 @@ qemu-boot img user:
 # Pass user=<name> to login as a non-root provisioned user.
 [doc('Boot the image as a throwaway VM and open a shell in it.')]
 [group('vm')]
-vm user="": build
+vm user="":
     #!/usr/bin/env bash
     set -euo pipefail
+    just {{ variant_build }}
     kargs=()
     if [[ -n "{{ user }}" ]]; then
         pairs=$(just credentials {{ user }})
@@ -211,7 +217,7 @@ vm user="": build
             kargs+=(--karg "systemd.set_credential_binary=$cred")
         done <<< "$pairs"
     fi
-    bcvk ephemeral run-ssh "${kargs[@]}" {{ imgref }}
+    bcvk ephemeral run-ssh "${kargs[@]}" {{ variant_imgref }}
 
 # Install the image to an encrypted raw disk image that can be booted or written
 # to a device. Prompts for a passphrase. The install runs in a VM.
@@ -225,11 +231,11 @@ disk: oci
     rm -f {{ disk_img }}
     install="/usr/libexec/bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
-    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ imgref }}"
+    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ variant_imgref }}"
     bcvk ephemeral run-ssh --rm \
         --mount-disk-file "$PWD/{{ disk_img }}:target" \
         --bind "$PWD:repo" \
-        {{ imgref }} \
+        {{ variant_imgref }} \
         -t "$install"
 
 # Install to a disk image through install.sh.
@@ -241,6 +247,7 @@ disk-script: oci
     # Point podman at the host's image store, which bcvk mounts read-only.
     install="sudo CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/tests/vm-storage.conf \
     bash /run/virtiofs-mnt-repo/install.sh \
+    --image {{ variant_imgref }} \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
     /dev/disk/by-id/virtio-target"
     bcvk ephemeral run-ssh --rm \
@@ -248,7 +255,7 @@ disk-script: oci
         --add-swap 8G \
         --mount-disk-file "$PWD/{{ disk_img }}:target" \
         --bind "$PWD:repo" \
-        {{ imgref }} \
+        {{ variant_imgref }} \
         -t "$install"
 
 # Boot the disk image from `just disk`.
