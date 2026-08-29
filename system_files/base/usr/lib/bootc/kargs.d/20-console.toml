@@ -1,3 +1,3 @@
 # Log to both the graphical console and the serial port, so a headless VM shows
 # the boot on its terminal.
-kargs = ["console=tty0", "console=ttyS0,115200"]
+kargs = ["rw", "console=tty0", "console=ttyS0,115200"]
