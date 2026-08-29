@@ -165,8 +165,6 @@ class LabelCounts(NamedTuple):
 
     files: int
     unclaimed_symlinks: int
-    broken_hardlinks: int
-    broken_hardlink_bytes: int
 
 
 COMPONENT_XATTR = "user.component"
@@ -271,23 +269,17 @@ def apply_labels(owners: Owners, components: Components) -> LabelCounts:
     for directory, source in components.items():
         label(directory, source)
 
-    files = symlinks = hardlinks = unshared = 0
+    files = symlinks = 0
     for path, source in owners.items():
         if any(d in components for d in PurePosixPath(path).parents):
             continue
-        info = Path(path).lstat()
-        if stat.S_ISLNK(info.st_mode):
+        if Path(path).is_symlink():
             # The kernel rejects user.* xattrs on symlinks.
             symlinks += 1
             continue
-        if info.st_nlink > 1:
-            # Copying the file out of its layer breaks the link, which costs
-            # a duplicate of its contents.
-            hardlinks += 1
-            unshared += info.st_size
         label(path, source)
         files += 1
-    return LabelCounts(files, symlinks, hardlinks, unshared)
+    return LabelCounts(files, symlinks)
 
 
 def label_components(admindir: Path) -> None:
@@ -308,7 +300,7 @@ def label_components(admindir: Path) -> None:
         )
 
     components = wholly_owned_dirs(owners)
-    files, symlinks, hardlinks, unshared = apply_labels(owners, components)
+    files, symlinks = apply_labels(owners, components)
     if not components and not files:
         fail(f"nothing to label under {admindir}")
 
@@ -330,9 +322,6 @@ def label_components(admindir: Path) -> None:
     )
     if symlinks:
         print(f"{symlinks} unclaimed symlinks have no labelled directory above them.")
-    if hardlinks:
-        mib = unshared / 1024**2
-        print(f"{hardlinks} hardlinked files ({mib:.0f} MiB) no longer share inodes.")
 
 
 def relocate_image_state() -> None:
