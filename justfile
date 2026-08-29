@@ -185,22 +185,6 @@ vm user="":
     fi
     bcvk ephemeral run-ssh "${kargs[@]}" {{ variant_imgref }}
 
-# Run CMD in a VM, with a fresh disk image attached as "target" and the repo
-# bound at /run/virtiofs-mnt-repo.
-[private]
-install-vm img imgref cmd *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # bcvk creates the image when it is missing, so removing it clears the
-    # previous run's partition table.
-    rm -f {{ img }}
-    bcvk ephemeral run-ssh --rm \
-        --mount-disk-file "$PWD/{{ img }}:target" \
-        --bind "$PWD:repo" \
-        {{ args }} \
-        {{ imgref }} \
-        -t "{{ cmd }}"
-
 # Install the image to an encrypted raw disk image that can be booted or written
 # to a device. Prompts for a passphrase. The install runs in a VM.
 [doc('Install the image to an encrypted raw disk image.')]
@@ -208,23 +192,23 @@ install-vm img imgref cmd *args:
 disk: oci
     #!/usr/bin/env bash
     set -euo pipefail
-    install="/usr/libexec/bootc-ubuntu-install \
-    /dev/disk/by-id/virtio-target \
-    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ variant_imgref }}"
-    just install-vm {{ disk_img }} {{ variant_imgref }} "$install"
-
-# Install to a disk image through install.sh.
-[group('disk')]
-disk-script: oci
-    #!/usr/bin/env bash
-    set -euo pipefail
+    # bcvk creates the image when it is missing, so removing it clears the
+    # previous run's partition table.
+    rm -f {{ disk_img }}
     # Point podman at the host's image store, which bcvk mounts read-only.
-    install="CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/tests/vm-storage.conf \
+    install="CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/vm/storage.conf \
     bash /run/virtiofs-mnt-repo/install.sh \
     --image {{ variant_imgref }} \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
     /dev/disk/by-id/virtio-target"
-    just install-vm {{ disk_img }} {{ variant_imgref }} "$install" --bind-storage-ro --add-swap 8G
+    # The repo is bound at /run/virtiofs-mnt-repo, the disk attached as "target".
+    bcvk ephemeral run-ssh --rm \
+        --mount-disk-file "$PWD/{{ disk_img }}:target" \
+        --bind "$PWD:repo" \
+        --bind-storage-ro \
+        --add-swap 8G \
+        {{ variant_imgref }} \
+        -t "$install"
 
 # Boot the disk image from `just disk`.
 [group('disk')]
