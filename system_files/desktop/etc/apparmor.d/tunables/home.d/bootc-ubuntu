@@ -1,0 +1,3 @@
+# Let confined profiles reach real home directories. /home is a symlink to
+# /var/home, and AppArmor matches the resolved path.
+@{HOMEDIRS}+=/var/home/

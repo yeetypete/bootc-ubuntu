@@ -1,0 +1,4 @@
+# The image ships its own /etc/apt/sources.list.d/google-chrome.sources. Stop the
+# postinst from adding a duplicate .list and its apt cron job.
+repo_add_once="false"
+repo_reenable_on_distupgrade="false"

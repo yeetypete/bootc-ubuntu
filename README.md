@@ -8,12 +8,13 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 
 - `docker.io/yeetypete/bootc-ubuntu:26.04`, a minimal bootable base image
   for other projects to [derive from](#deriving-your-own-image).
-- `docker.io/yeetypete/bootc-ubuntu-desktop:26.04`, a GNOME desktop derived
+- `docker.io/yeetypete/bootc-ubuntu-desktop:26.04`, a Sway desktop derived
   from the base image and sealed into a unified kernel image.
 
 ## What's in the image
 
-- Ubuntu 26.04, with GNOME desktop in the desktop image.
+- Ubuntu 26.04, with a Sway desktop, NVIDIA drivers and Docker in the desktop
+  image.
 - `bootc` with the [composefs backend](https://bootc.dev/bootc/experimental-composefs.html)
   enabled for image storage and deployment, giving a read-only root filesystem
   verified with `fs-verity`.

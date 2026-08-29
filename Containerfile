@@ -173,27 +173,148 @@ RUN --network=none \
     --mount=type=tmpfs,target=/run \
     --mount=type=tmpfs,target=/tmp \
     /usr/libexec/bootc-ubuntu-imagectl finalize
-
-
 # The desktop image, derived from the base image.
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE} AS desktop
 
+# Staged before any apt install so the third-party sources, the pins and the
+# google-chrome default are all in place before the packages that need them.
 COPY --from=system-files /system_files/desktop/ /
+
+# Keys for the sources staged above, which apt-get update cannot read without.
+ADD --chmod=644 https://apt.fury.io/wez/gpg.key /etc/apt/keyrings/wezterm.asc
+ADD --chmod=644 https://cli.github.com/packages/githubcli-archive-keyring.gpg /etc/apt/keyrings/github-cli.gpg
+ADD --chmod=644 https://apt.foxglove.dev/pubkey.gpg /etc/apt/keyrings/foxglove.asc
+ADD --chmod=644 https://dl.google.com/linux/linux_signing_key.pub /etc/apt/keyrings/google-chrome.asc
+ADD --chmod=644 https://download.docker.com/linux/ubuntu/gpg /etc/apt/keyrings/docker.asc
+ADD --chmod=644 https://downloads.1password.com/linux/keys/1password.asc /etc/apt/keyrings/1password.asc
+ADD --chmod=644 https://nvidia.github.io/libnvidia-container/gpgkey /etc/apt/keyrings/nvidia-container-toolkit.asc
+ADD --chmod=644 https://packages.microsoft.com/keys/microsoft.asc /etc/apt/keyrings/microsoft.asc
+ADD --chmod=644 https://pkgs.tailscale.com/stable/ubuntu/resolute.asc /etc/apt/keyrings/tailscale.asc
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    linux-modules-nvidia-610-open-generic \
+    nvidia-driver-610-open
+
+# The modules package also ships an empty /usr/lib/modules/kernel/nvidia-610-open
+# next to the real /usr/lib/modules/<kver>/kernel/nvidia-610-open, which makes
+# `bootc-ubuntu-imagectl` see two kernels under /usr/lib/modules and refuse to run.
+RUN rm -df /usr/lib/modules/kernel/nvidia-610-open /usr/lib/modules/kernel
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install --no-install-recommends -y \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-ce \
+    docker-ce-cli \
+    docker-compose-plugin \
+    nvidia-container-toolkit
+
+RUN nvidia-ctk runtime configure --runtime=docker && \
+    systemctl enable \
+    containerd.service \
+    docker.service \
+    docker.socket
+
+# 1Password's postinst creates these with adduser, which allocates from the human
+# range and would take GID 1000, which the first account is provisioned with.
+RUN groupadd --system onepassword && \
+    groupadd --system onepassword-mcp
 
 # NOTE: We install with recommended dependencies to get a more complete desktop experience.
 # hadolint ignore=DL3015
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
+    1password \
+    apparmor \
+    bat \
+    blueman \
+    brightnessctl \
+    code \
+    dex \
+    dunst \
+    fd-find \
+    fish \
     flatpak \
+    fonts-adwaita-sans \
+    fonts-dejavu-core \
+    fonts-jetbrains-mono \
+    fonts-liberation \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-noto-core \
+    fonts-ubuntu \
+    foxglove-studio \
+    fzf \
+    gdm3 \
+    gh \
+    git \
+    git-delta \
+    git-lfs \
+    gnome-initial-setup \
+    gnome-keyring \
+    gnome-software \
     gnome-software-plugin-flatpak \
+    google-chrome-stable \
+    grimshot \
+    htop \
+    just \
+    lm-sensors \
+    locales \
     logrotate \
-    ubuntu-desktop-minimal \
-    ubuntu-minimal
+    loupe \
+    mesa-vulkan-drivers \
+    network-manager-gnome \
+    nvme-cli \
+    pamixer \
+    pavucontrol \
+    pipewire-audio \
+    playerctl \
+    policykit-1-gnome \
+    pulseaudio-utils \
+    rofi \
+    rsync \
+    shellcheck \
+    starship \
+    sway \
+    sway-backgrounds \
+    swayidle \
+    swaylock \
+    tailscale \
+    tmux \
+    tree \
+    ubuntu-minimal \
+    usbutils \
+    vim \
+    waybar \
+    wezterm-nightly \
+    wget \
+    wl-clipboard \
+    wpasupplicant \
+    xclip \
+    xdg-desktop-portal-gtk \
+    xdg-desktop-portal-wlr \
+    xdg-user-dirs \
+    zoxide
+
+# foxglove-studio's postinst unconditionally adds its own apt source and key,
+# duplicating the ones staged in /etc/apt above.
+RUN rm /etc/apt/sources.list.d/foxglove-studio.list /etc/apt/trusted.gpg.d/foxglove.gpg
+
+ARG CHEZMOI_VERSION=2.72.0
+ADD --checksum=sha256:6023435f5393553345ec10c75cd8160658c415f2bf9c3d8def3e120c92faf629 \
+    https://github.com/twpayne/chezmoi/releases/download/v${CHEZMOI_VERSION}/chezmoi_${CHEZMOI_VERSION}_linux_amd64.deb /chezmoi.deb
+RUN dpkg -i /chezmoi.deb && rm /chezmoi.deb
 
 # The ubuntu base image ships no generated locales.
 RUN locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8
+
+# Re-staged after apt, which overwrote it with the session the sway package ships.
+COPY --from=system-files /system_files/desktop/usr/share/wayland-sessions/ /usr/share/wayland-sessions/
 
 # Preconfigure Flathub, where applications come from. `flatpak remote-add` would
 # write to /var/lib/flatpak, which `bootc-ubuntu-imagectl finalize` empties, so ship
@@ -203,8 +324,10 @@ ADD --chmod=644 --checksum=sha256:3371dd250e61d9e1633630073fefda153cd4426f72f4af
 
 # PackageKit installs debs into /usr, which is read-only. Make sure it doesn't run.
 RUN systemctl enable \
+    bluetooth.service \
     bootc-ubuntu-flatpak-init.service \
-    gdm.service && \
+    gdm.service \
+    tailscaled.service && \
     systemctl mask \
     packagekit-offline-update.service \
     packagekit.service && \

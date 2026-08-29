@@ -1,7 +1,5 @@
 # bootc-ubuntu developer tasks.
 
-set default-list := true
-
 # Version for image labels and the tag suffix, without its leading "v".
 version := "0.0.0"
 # Git commit SHA for image labels.
@@ -39,7 +37,7 @@ base_labels := labels + \
     " --label 'org.opencontainers.image.description=Ubuntu 26.04 as a bootc base image'"
 desktop_labels := labels + \
     " --label org.opencontainers.image.title=bootc-ubuntu-desktop" + \
-    " --label 'org.opencontainers.image.description=Ubuntu 26.04 GNOME desktop as a bootc image'"
+    " --label 'org.opencontainers.image.description=Ubuntu 26.04 Sway desktop as a bootc image'"
 # The base rootfs as built, before chunking.
 base_target := "localhost/bootc-ubuntu-base-target:" + tag
 # The base image, chunked.
@@ -66,6 +64,10 @@ variant_build := if variant == "base" { "build-base" } else { "build" }
 # set display=gtk for a window, the only way to see the desktop.
 display := "none"
 graphics := if display == "none" { "-nographic" } else { "-vga none -device virtio-vga-gl -display " + display + ",gl=on -serial mon:stdio" }
+
+# List available recipes.
+default:
+    @just --list
 
 # Repack `src` into content-based layers, tagged `dst`.
 [private]
