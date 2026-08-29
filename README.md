@@ -31,7 +31,7 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 > [!IMPORTANT]
 > On an Ubuntu 25.10 or newer host, build `bcvk` from
 > [bootc-dev/bcvk#329](https://github.com/bootc-dev/bcvk/pull/329). Ubuntu 25.10
-> and newer incldue a `bwrap-userns-restrict` AppArmor profile, which denies
+> and newer include a `bwrap-userns-restrict` AppArmor profile, which denies
 > capabilities to `bwrap`'s children, so `virtiofsd` exits at startup and the VM
 > never finishes booting. On any other host the released `bcvk` works.
 
@@ -73,11 +73,6 @@ The recipes above run the VMs headless. Set `display` to open a window instead:
 just display=gtk boot ""  # No account, so GDM runs GNOME Initial Setup.
 ```
 
-> [!NOTE]
-> Passing no user leaves a freshly installed disk without an account, so GDM
-> shows GNOME Initial Setup instead of the login screen. Create the first
-> account there.
-
 ## Deriving your own image
 
 The base image is built to be derived from. Install packages, copy
@@ -90,8 +85,8 @@ FROM docker.io/yeetypete/bootc-ubuntu:26.04
 RUN apt-get update && apt-get install --no-install-recommends -y nginx && \
     systemctl enable nginx.service
 
-# Whatever this directory holds lands in the image, so
-# system_files/etc/nginx/conf.d/example.conf becomes /etc/nginx/conf.d/example.conf.
+# Contents land at the image root, so system_files/etc/nginx/nginx.conf
+# becomes /etc/nginx/nginx.conf.
 COPY system_files/ /
 
 RUN /usr/libexec/bootc-ubuntu-imagectl finalize
