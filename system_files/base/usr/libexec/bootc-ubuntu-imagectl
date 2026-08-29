@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, NamedTuple, NoReturn
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+# --- Image layout ---
+
+
 MODULES = Path("/usr/lib/modules")
 STOCK_TMPFILES = Path("/usr/lib/tmpfiles.d")
 VAR_TMPFILES = STOCK_TMPFILES / "bootc-ubuntu-var.conf"
@@ -76,6 +79,9 @@ VAR = Path("/var")
 CHUNKAH_ROOTFS = Path("/chunkah")
 
 
+# --- Helpers ---
+
+
 def fail(message: str) -> NoReturn:
     """Exit with a message naming this tool."""
     sys.exit(f"bootc-ubuntu-imagectl: {message}")
@@ -86,7 +92,7 @@ def step(message: str) -> None:
     print(f"bootc-ubuntu-imagectl: {message}", file=sys.stderr, flush=True)
 
 
-def summary(command: Callable[[argparse.Namespace], None]) -> str:
+def summary(command: Callable[[Args], None]) -> str:
     """Summarise a subcommand for --help.
 
     Returns:
@@ -94,6 +100,9 @@ def summary(command: Callable[[argparse.Namespace], None]) -> str:
     """
     doc = command.__doc__
     return doc.splitlines()[0] if doc else ""
+
+
+# --- Kernel and initramfs ---
 
 
 def kernel_version() -> str:
@@ -114,7 +123,7 @@ def kernel_version() -> str:
     return kvers[0]
 
 
-def cmd_initramfs(args: argparse.Namespace) -> None:
+def cmd_initramfs(args: Args) -> None:
     """Build the initramfs and stage the kernel under /usr/lib/modules."""
     kver = kernel_version()
     moddir = MODULES / kver
@@ -144,6 +153,9 @@ def cmd_initramfs(args: argparse.Namespace) -> None:
         check=True,
     )
     (moddir / "initramfs.img").chmod(0o600)
+
+
+# --- Component labelling ---
 
 
 # Recorded path to source package.
@@ -316,6 +328,9 @@ def label_components(admindir: Path) -> None:
         print(f"{symlinks} unclaimed symlinks have no labelled directory above them.")
 
 
+# --- Rootfs layout ---
+
+
 def relocate_image_state() -> None:
     """Move package manager state to /usr, see IMAGE_STATE."""
     step("relocating package manager state to /usr/lib/sysimage")
@@ -417,6 +432,9 @@ def relocate_font_cache() -> None:
         return
     step("building the font cache")
     subprocess.run(["fc-cache", "--system-only", "--force"], check=True)
+
+
+# --- Generated /var tmpfiles.d ---
 
 
 # systemd splits the line on whitespace and unquotes it, then expands "%"
@@ -563,7 +581,10 @@ def empty_var() -> None:
         link.symlink_to(target)
 
 
-def cmd_cleanup(args: argparse.Namespace) -> None:
+# --- Subcommands ---
+
+
+def cmd_cleanup(args: Args) -> None:
     """Strip build-time state and lay out the rootfs the way bootc expects."""
     label_components(DPKG_ADMINDIR)
     relocate_image_state()
@@ -575,20 +596,20 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
     empty_var()
 
 
-def cmd_lint(args: argparse.Namespace) -> None:
+def cmd_lint(args: Args) -> None:
     """Run bootc container lint with warnings fatal."""
     step("linting")
     subprocess.run(["bootc", "container", "lint", "--fatal-warnings"], check=True)
 
 
-def cmd_finalize(args: argparse.Namespace) -> None:
+def cmd_finalize(args: Args) -> None:
     """Run initramfs, cleanup and lint, in that order."""
     cmd_initramfs(args)
     cmd_cleanup(args)
     cmd_lint(args)
 
 
-def cmd_rechunk(args: argparse.Namespace) -> None:
+def cmd_rechunk(args: Args) -> None:
     r"""Repack an image into content-based layers with chunkah.
 
     Runs from the image itself, with the image to repack mounted at /chunkah.
@@ -628,7 +649,21 @@ def cmd_rechunk(args: argparse.Namespace) -> None:
     os.execvp(command[0], command)
 
 
-def parse_args() -> argparse.Namespace:
+# --- Command line ---
+
+
+class Args(argparse.Namespace):
+    """The parsed command line, typed."""
+
+    func: Callable[[Args], None]
+    max_layers: int
+    source_date_epoch: int
+    output: str | None
+    prune: list[str]
+    tag: str | None
+
+
+def parse_args() -> Args:
     """Parse the command line.
 
     Returns:
@@ -681,7 +716,7 @@ def parse_args() -> argparse.Namespace:
     )
     rechunk.add_argument("--tag", help="name podman load gives the image")
     rechunk.set_defaults(func=cmd_rechunk)
-    return parser.parse_args()
+    return parser.parse_args(namespace=Args())
 
 
 def main() -> None:
