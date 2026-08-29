@@ -1,5 +1,9 @@
 [install]
 bootloader = "systemd"
+# Empty omits the root= karg, leaving the root to be found by its discoverable
+# partition type. The default, a root=UUID= karg, cannot name an encrypted
+# root before it is unlocked.
+root-mount-spec = ""
 
 [install.filesystem.root]
 type = "ext4"
