@@ -28,9 +28,33 @@ jobs:
       - name: Run pre-commit hooks
         uses: j178/prek-action@5337cb91e0fa35a7ff31b9ca345126d8bbbcdf16 # v2
 
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8
+        with:
+          enable-cache: true
+          cache-local-path: ${{ runner.temp }}/uv-cache
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Ruff lint
+        run: uv run ruff check
+      - name: Ruff format
+        run: uv run ruff format --check
+      - name: Pyrefly typecheck
+        run: uv run pyrefly check
+
   build:
     name: build
-    needs: pre-commit
+    needs: [pre-commit, lint]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -75,17 +99,12 @@ jobs:
           printf '%s' "$DOCKERHUB_TOKEN" |
             podman login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Build image
-        env:
-          RELEASE: ${{ github.ref_type == 'tag' }}
-        run: |
-          just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
-            revision="$REVISION" release="$RELEASE" build
-
-      - name: Push image
+      - name: Build and push images
         env:
           RECIPE: ${{ github.ref_type == 'tag' && 'push-release' || 'push' }}
-        run: just version="${VERSION#v}" revision="$REVISION" "$RECIPE"
+        run: |
+          just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
+            revision="$REVISION" "$RECIPE"
 
   release:
     name: release

@@ -13,6 +13,12 @@
   },
   "lsp": {
     "pyrefly": {
+      "binary": {
+        "arguments": [
+          "lsp"
+        ],
+        "path": ".venv/bin/pyrefly"
+      },
       "settings": {
         "python": {
           "pyrefly": {

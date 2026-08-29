@@ -1,0 +1,6 @@
+// Keep the configuration files the image ships when a package upgrade in a
+// derived image would otherwise prompt for them.
+Dpkg::Options {
+    "--force-confdef";
+    "--force-confold";
+}

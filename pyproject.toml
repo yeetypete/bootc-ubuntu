@@ -1,0 +1,36 @@
+[project]
+name = "bootc-ubuntu"
+version = "0.0.0"
+description = "Tooling for the bootc-ubuntu images."
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pyrefly>=1.2.0",
+  "ruff>=0.16.5",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+extend-include = ["**/bootc-ubuntu-imagectl", "**/bootc-ubuntu-install"]
+
+[tool.ruff.lint]
+preview = true
+extend-select = ["D", "DOC", "TC"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.pyrefly]
+preset = "strict"
+min-severity = "ignore"
+project-includes = [
+  "system_files/base/usr/libexec/bootc-ubuntu-install",
+  "system_files/base/usr/libexec/bootc-ubuntu-imagectl",
+]

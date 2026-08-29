@@ -4,14 +4,16 @@ Ubuntu 26.04 as a [bootc](https://bootc-dev.github.io/bootc/) image. The image
 provides a full system, built and shipped as a container image, updated
 transactionally, with a read-only root filesystem on an encrypted disk.
 
-> [!WARNING]
-> This repository is a **reference example** of running `bootc` on Ubuntu, not a
-> base image for other projects to consume. Fork it and adapt the `Containerfile`
-> and `rootfs/` to your own needs rather than depending on the published images.
+`bootc-ubuntu` provides:
+
+- `docker.io/yeetypete/bootc-ubuntu:26.04`, a minimal bootable base image
+  for other projects to [derive from](#deriving-your-own-image).
+- `docker.io/yeetypete/bootc-ubuntu-desktop:26.04`, a GNOME desktop derived
+  from the base image and sealed into a unified kernel image.
 
 ## What's in the image
 
-- Ubuntu 26.04 with GNOME desktop.
+- Ubuntu 26.04, with GNOME desktop in the desktop image.
 - `bootc` with the [composefs backend](https://bootc.dev/bootc/experimental-composefs.html)
   enabled for image storage and deployment, giving a read-only root filesystem
   verified with `fs-verity`.
@@ -29,7 +31,7 @@ transactionally, with a read-only root filesystem on an encrypted disk.
 > [!IMPORTANT]
 > On an Ubuntu 25.10 or newer host, build `bcvk` from
 > [bootc-dev/bcvk#329](https://github.com/bootc-dev/bcvk/pull/329). Ubuntu 25.10
-> and newer incldue a `bwrap-userns-restrict` AppArmor profile, which denies
+> and newer include a `bwrap-userns-restrict` AppArmor profile, which denies
 > capabilities to `bwrap`'s children, so `virtiofsd` exits at startup and the VM
 > never finishes booting. On any other host the released `bcvk` works.
 
@@ -71,10 +73,35 @@ The recipes above run the VMs headless. Set `display` to open a window instead:
 just display=gtk boot ""  # No account, so GDM runs GNOME Initial Setup.
 ```
 
-> [!NOTE]
-> Passing no user leaves a freshly installed disk without an account, so GDM
-> shows GNOME Initial Setup instead of the login screen. Create the first
-> account there.
+## Deriving your own image
+
+The base image is built to be derived from. Install packages, copy
+configuration in, and finish with `bootc-ubuntu-imagectl finalize`, which the
+base image ships.
+
+```dockerfile
+FROM docker.io/yeetypete/bootc-ubuntu:26.04
+
+RUN apt-get update && apt-get install --no-install-recommends -y nginx && \
+    systemctl enable nginx.service
+
+# Contents land at the image root, so system_files/etc/nginx/nginx.conf
+# becomes /etc/nginx/nginx.conf.
+COPY system_files/ /
+
+RUN /usr/libexec/bootc-ubuntu-imagectl finalize
+```
+
+Build and push it, then install it by pointing `install.sh` at it, or switch
+an installed system to it with `bootc switch`:
+
+```bash
+curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
+    | sudo bash -s -- --image REGISTRY/IMAGE:TAG /dev/nvme0n1
+```
+
+The [`desktop` stage](Containerfile#L178) of the `Containerfile` is itself a
+derived image, and can be used as an example of how to derive your own image.
 
 ## Installing tools transiently
 

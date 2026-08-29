@@ -1,0 +1,12 @@
+[Unit]
+Description=Initialize the system-wide flatpak repository
+ConditionPathExists=!/var/lib/flatpak/repo/config
+Before=flatpak-system-helper.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/flatpak remote-list --system
+
+[Install]
+WantedBy=multi-user.target

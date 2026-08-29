@@ -8,7 +8,7 @@ set -euo pipefail
 
 # The image to install, and the registry reference the installed system
 # fetches updates from.
-IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu:26.04}"
+IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu-desktop:26.04}"
 # Where bootc installs from, in containers-transports(5) form.
 SOURCE="${SOURCE:-containers-storage:${IMAGE}}"
 usage() {
@@ -84,4 +84,4 @@ exec podman run --rm -it --privileged --pid=host --ipc=host \
     -v /dev:/dev -v /run/udev:/run/udev:ro \
     -v /var/lib/containers:/var/lib/containers \
     "${volumes[@]}" \
-    "${IMAGE}" bootc-ubuntu-install "${disk}" "${SOURCE}" "${IMAGE}"
+    "${IMAGE}" /usr/libexec/bootc-ubuntu-install "${disk}" "${SOURCE}" "${IMAGE}"
