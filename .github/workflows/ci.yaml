@@ -44,7 +44,7 @@ jobs:
           enable-cache: true
           cache-local-path: ${{ runner.temp }}/uv-cache
       - name: Install dependencies
-        run: uv sync --locked --all-groups
+        run: uv sync --locked
       - name: Ruff lint
         run: uv run ruff check
       - name: Ruff format
