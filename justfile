@@ -188,17 +188,17 @@ vm user="":
 # Run CMD in a VM, with a fresh disk image attached as "target" and the repo
 # bound at /run/virtiofs-mnt-repo.
 [private]
-install-vm cmd *args:
+install-vm img imgref cmd *args:
     #!/usr/bin/env bash
     set -euo pipefail
     # bcvk creates the image when it is missing, so removing it clears the
     # previous run's partition table.
-    rm -f {{ disk_img }}
+    rm -f {{ img }}
     bcvk ephemeral run-ssh --rm \
-        --mount-disk-file "$PWD/{{ disk_img }}:target" \
+        --mount-disk-file "$PWD/{{ img }}:target" \
         --bind "$PWD:repo" \
         {{ args }} \
-        {{ variant_imgref }} \
+        {{ imgref }} \
         -t "{{ cmd }}"
 
 # Install the image to an encrypted raw disk image that can be booted or written
@@ -211,7 +211,7 @@ disk: oci
     install="/usr/libexec/bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
     oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ variant_imgref }}"
-    just variant={{ variant }} install-vm "$install"
+    just install-vm {{ disk_img }} {{ variant_imgref }} "$install"
 
 # Install to a disk image through install.sh.
 [group('disk')]
@@ -224,7 +224,7 @@ disk-script: oci
     --image {{ variant_imgref }} \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
     /dev/disk/by-id/virtio-target"
-    just variant={{ variant }} install-vm "$install" --bind-storage-ro --add-swap 8G
+    just install-vm {{ disk_img }} {{ variant_imgref }} "$install" --bind-storage-ro --add-swap 8G
 
 # Boot the disk image from `just disk`.
 [group('disk')]
