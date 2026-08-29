@@ -1,11 +1,9 @@
 # bootc-ubuntu developer tasks.
 
-# Image repository for the built desktop image.
-image := "yeetypete/bootc-ubuntu-desktop"
-# Image repository for the base image the desktop image derives from.
-base_image := "yeetypete/bootc-ubuntu"
+set default-list := true
+
 # Version for image labels and the tag suffix, without its leading "v".
-version := trim_start_match("v0.0.0", "v")
+version := "0.0.0"
 # Git commit SHA for image labels.
 revision := `git rev-parse HEAD 2>/dev/null || echo ""`
 # Short SHA for tags.
@@ -20,22 +18,20 @@ cache_repo := ""
 # Local OCI layout the image is exported to.
 oci_dir := "image.oci"
 # Registry reference of the built image, as the installed system refers to it.
-imgref := "docker.io/" + image + ":" + tag
-# Whether this is a release build.
-release := "false"
+imgref := "docker.io/yeetypete/bootc-ubuntu-desktop:" + tag
 # Tag identifying this particular build.
-build_tag := if release == "true" { tag } else { tag + "-" + short_revision }
+build_tag := tag + "-" + short_revision
 # Registry reference pinned to the commit, which every build is tagged with.
 revision_imgref := imgref + "-" + short_revision
 # Registry reference for a tagged release.
 version_imgref := imgref + "-" + version
 # The same references for the base image.
-base_imgref := "docker.io/" + base_image + ":" + tag
+base_imgref := "docker.io/yeetypete/bootc-ubuntu:" + tag
 base_revision_imgref := base_imgref + "-" + short_revision
 base_version_imgref := base_imgref + "-" + version
+push_args := "--compression-format zstd --force-compression"
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
-created_label := if created == "" { "" } else { "--label org.opencontainers.image.created=" + created }
-labels := created_label + \
+labels := "--label org.opencontainers.image.created=" + created + \
     " --label org.opencontainers.image.version=" + version + \
     " --label org.opencontainers.image.revision=" + revision
 base_labels := labels + \
@@ -52,7 +48,7 @@ base_chunked := "localhost/bootc-ubuntu-base:" + tag
 target := "localhost/bootc-ubuntu-target:" + tag
 # The rootfs repacked into content-based layers, which the UKI is sealed against.
 chunked := "localhost/bootc-ubuntu-chunked:" + tag
-# Firmware for the qemu recipes. Booting this image needs UEFI.
+# Firmware for the boot recipe. Booting this image needs UEFI.
 ovmf := "-drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,readonly=on,file=/usr/share/OVMF/OVMF_VARS_4M.fd"
 # Base name of the generated disk image.
@@ -63,16 +59,13 @@ disk_img := if variant == "base" { name + "-base.img" } else { name + ".img" }
 user := "ubuntu"
 # Which image the vm recipe builds and boots, "desktop" or "base".
 variant := "desktop"
-variant_imgref := if variant == "base" { base_imgref } else { imgref }
+variant_imgref := if variant == "base" { base_imgref } else if variant == "desktop" { imgref } \
+    else { error("variant must be desktop or base, not " + variant) }
 variant_build := if variant == "base" { "build-base" } else { "build" }
 # QEMU display for the VM recipes. "none" keeps the console on this terminal;
 # set display=gtk for a window, the only way to see the desktop.
 display := "none"
 graphics := if display == "none" { "-nographic" } else { "-vga none -device virtio-vga-gl -display " + display + ",gl=on -serial mon:stdio" }
-
-# List available recipes.
-default:
-    @just --list
 
 # Repack `src` into content-based layers, tagged `dst`.
 [private]
@@ -142,18 +135,16 @@ oci:
 # Push the images to their registries under the commit they were built from.
 [group('image')]
 push: build
-    podman push --compression-format zstd --force-compression {{ base_revision_imgref }}
-    podman push --compression-format zstd --force-compression {{ revision_imgref }}
+    podman push {{ push_args }} {{ base_revision_imgref }}
+    podman push {{ push_args }} {{ revision_imgref }}
 
 # Publish a tagged release.
 [group('image')]
 push-release: push
-    podman tag {{ base_revision_imgref }} {{ base_version_imgref }}
-    podman push --compression-format zstd --force-compression {{ base_version_imgref }}
-    podman push --compression-format zstd --force-compression {{ base_imgref }}
-    podman tag {{ revision_imgref }} {{ version_imgref }}
-    podman push --compression-format zstd --force-compression {{ version_imgref }}
-    podman push --compression-format zstd --force-compression {{ imgref }}
+    podman push {{ push_args }} {{ base_revision_imgref }} docker://{{ base_version_imgref }}
+    podman push {{ push_args }} {{ base_imgref }}
+    podman push {{ push_args }} {{ revision_imgref }} docker://{{ version_imgref }}
+    podman push {{ push_args }} {{ imgref }}
 
 # Switch this machine to the locally built image.
 [group('image')]
@@ -177,31 +168,6 @@ credentials name=user:
     printf 'sysusers.extra:%s\n' "$account"
     printf 'passwd.hashed-password.{{ name }}:%s\n' "$hashed"
 
-# Boot IMG in qemu, with the console on this terminal.
-[private]
-qemu-boot img user:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    [[ -f {{ img }} ]] || { echo "{{ img }} does not exist." >&2; exit 1; }
-    creds=()
-    if [[ -n "{{ user }}" ]]; then
-        pairs=$(just credentials {{ user }})
-        # SMBIOS separates the pair with = rather than :.
-        while read -r cred; do
-            creds+=(-smbios "type=11,value=io.systemd.credential.binary:${cred/:/=}")
-        done <<< "$pairs"
-    fi
-    exec qemu-system-x86_64 \
-        "${creds[@]}" \
-        -enable-kvm \
-        -machine q35 \
-        -cpu host \
-        -smp 2 \
-        -m 4096 \
-        {{ ovmf }} \
-        -drive file={{ img }},format=raw,if=virtio \
-        {{ graphics }}
-
 # Boot the image as a throwaway VM and open a shell in it. The VM is discarded on exit.
 # Pass user=<name> to login as a non-root provisioned user.
 [doc('Boot the image as a throwaway VM and open a shell in it.')]
@@ -219,6 +185,22 @@ vm user="":
     fi
     bcvk ephemeral run-ssh "${kargs[@]}" {{ variant_imgref }}
 
+# Run CMD in a VM, with a fresh disk image attached as "target" and the repo
+# bound at /run/virtiofs-mnt-repo.
+[private]
+install-vm cmd *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # bcvk creates the image when it is missing, so removing it clears the
+    # previous run's partition table.
+    rm -f {{ disk_img }}
+    bcvk ephemeral run-ssh --rm \
+        --mount-disk-file "$PWD/{{ disk_img }}:target" \
+        --bind "$PWD:repo" \
+        {{ args }} \
+        {{ variant_imgref }} \
+        -t "{{ cmd }}"
+
 # Install the image to an encrypted raw disk image that can be booted or written
 # to a device. Prompts for a passphrase. The install runs in a VM.
 [doc('Install the image to an encrypted raw disk image.')]
@@ -226,41 +208,48 @@ vm user="":
 disk: oci
     #!/usr/bin/env bash
     set -euo pipefail
-    # bcvk creates the image when it is missing, so removing it clears the
-    # previous run's partition table.
-    rm -f {{ disk_img }}
     install="/usr/libexec/bootc-ubuntu-install \
     /dev/disk/by-id/virtio-target \
     oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} {{ variant_imgref }}"
-    bcvk ephemeral run-ssh --rm \
-        --mount-disk-file "$PWD/{{ disk_img }}:target" \
-        --bind "$PWD:repo" \
-        {{ variant_imgref }} \
-        -t "$install"
+    just install-vm "$install"
 
 # Install to a disk image through install.sh.
 [group('disk')]
 disk-script: oci
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -f {{ disk_img }}
     # Point podman at the host's image store, which bcvk mounts read-only.
     install="sudo CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/tests/vm-storage.conf \
     bash /run/virtiofs-mnt-repo/install.sh \
     --image {{ variant_imgref }} \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
     /dev/disk/by-id/virtio-target"
-    bcvk ephemeral run-ssh --rm \
-        --bind-storage-ro \
-        --add-swap 8G \
-        --mount-disk-file "$PWD/{{ disk_img }}:target" \
-        --bind "$PWD:repo" \
-        {{ variant_imgref }} \
-        -t "$install"
+    just install-vm "$install" --bind-storage-ro --add-swap 8G
 
 # Boot the disk image from `just disk`.
 [group('disk')]
-boot user=user: (qemu-boot disk_img user)
+boot user=user:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ -f {{ disk_img }} ]] || { echo "{{ disk_img }} does not exist." >&2; exit 1; }
+    creds=()
+    if [[ -n "{{ user }}" ]]; then
+        pairs=$(just credentials {{ user }})
+        # SMBIOS separates the pair with = rather than :.
+        while read -r cred; do
+            creds+=(-smbios "type=11,value=io.systemd.credential.binary:${cred/:/=}")
+        done <<< "$pairs"
+    fi
+    exec qemu-system-x86_64 \
+        "${creds[@]}" \
+        -enable-kvm \
+        -machine q35 \
+        -cpu host \
+        -smp 2 \
+        -m 4096 \
+        {{ ovmf }} \
+        -drive file={{ disk_img }},format=raw,if=virtio \
+        {{ graphics }}
 
 # List running VMs.
 [group('vm')]
@@ -274,6 +263,6 @@ vm-kill:
     -pkill -f '[q]emu-system-x86_64 .*{{ name }}'
     -bcvk ephemeral rm-all --force
 
-# Remove the generated OCI archive and disk image.
+# Remove the generated OCI archive and disk images.
 clean:
-    rm -rf {{ oci_dir }} {{ disk_img }}
+    rm -rf {{ oci_dir }} {{ name }}*.img

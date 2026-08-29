@@ -99,17 +99,12 @@ jobs:
           printf '%s' "$DOCKERHUB_TOKEN" |
             podman login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Build image
-        env:
-          RELEASE: ${{ github.ref_type == 'tag' }}
-        run: |
-          just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
-            revision="$REVISION" release="$RELEASE" build
-
-      - name: Push images
+      - name: Build and push images
         env:
           RECIPE: ${{ github.ref_type == 'tag' && 'push-release' || 'push' }}
-        run: just version="${VERSION#v}" revision="$REVISION" "$RECIPE"
+        run: |
+          just cache_repo="$CACHE_REPO" version="${VERSION#v}" \
+            revision="$REVISION" "$RECIPE"
 
   release:
     name: release
