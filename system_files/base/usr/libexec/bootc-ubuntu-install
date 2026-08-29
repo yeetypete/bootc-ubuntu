@@ -5,8 +5,8 @@ Partitions the disk according to /usr/lib/bootc-ubuntu/repart.d, encrypts the
 root with a passphrase, and installs the image into it. Run this from the bootc
 image as a container, against a disk on the host:
 
-    podman run --rm -it --privileged --pid=host --ipc=host \\
-      -v /dev:/dev -v /run/udev:/run/udev:ro \\
+    podman run --rm -it --privileged --pid=host --ipc=host \
+      -v /dev:/dev -v /run/udev:/run/udev:ro \
       IMAGE /usr/libexec/bootc-ubuntu-install /dev/nvme0n1 IMGREF
 """
 
@@ -178,8 +178,8 @@ def main() -> None:
     confirm(args.device)
     passphrase = prompt_passphrase()
 
-    # Not under /tmp: bootc install mounts a fresh tmpfs over /tmp when it is
-    # not one already, as in a container, which would shadow the target mount.
+    # Kept out of /tmp, where bootc install mounts a fresh tmpfs when it is not
+    # one already, as in a container, and that would shadow the target mount.
     with tempfile.TemporaryDirectory(dir="/run") as tmp:
         # repart takes the key from a file. Writing the passphrase with no
         # trailing newline makes the resulting keyslot an ordinary passphrase.
