@@ -19,7 +19,7 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, NoReturn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -82,7 +82,7 @@ VAR = Path("/var")
 CHUNKAH_ROOTFS = Path("/chunkah")
 
 
-def die(message: str) -> None:
+def fail(message: str) -> NoReturn:
     """Exit with a message naming this tool."""
     sys.exit(f"bootc-ubuntu-imagectl: {message}")
 
@@ -90,21 +90,6 @@ def die(message: str) -> None:
 def step(message: str) -> None:
     """Report the step about to run."""
     print(f"bootc-ubuntu-imagectl: {message}", file=sys.stderr, flush=True)
-
-
-def run(*args: str, env: dict[str, str] | None = None) -> None:
-    """Run a command, raising if it fails."""
-    subprocess.run(args, check=True, env=env)
-
-
-def capture(*args: str) -> str:
-    """Run a command and return its standard output.
-
-    Returns:
-        Everything the command wrote to standard output.
-    """
-    completed = subprocess.run(args, check=True, stdout=subprocess.PIPE, text=True)
-    return completed.stdout
 
 
 def summary(command: Callable[[argparse.Namespace], None]) -> str:
@@ -123,12 +108,14 @@ def kernel_version() -> str:
     Returns:
         The kernel version.
     """
-    kvers = sorted(p.name for p in MODULES.iterdir() if p.is_dir())
+    kvers: list[str] = (
+        sorted(p.name for p in MODULES.iterdir() if p.is_dir())
+        if MODULES.is_dir()
+        else []
+    )
     if len(kvers) != 1:
-        die(
-            f"expected exactly one kernel in {MODULES}, found: {' '.join(kvers)}\n"
-            "Purge the kernels you do not want before finalizing, e.g. "
-            "apt-get purge 'linux-image-6.*' in the same RUN that installs a new one."
+        fail(
+            f"expected exactly one kernel in {MODULES}, found: {' '.join(kvers) or 'none'}."
         )
     return kvers[0]
 
@@ -145,21 +132,24 @@ def cmd_initramfs(args: argparse.Namespace) -> None:
     if boot_vmlinuz.is_file():
         boot_vmlinuz.copy(moddir / "vmlinuz", preserve_metadata=True)
     if not (moddir / "vmlinuz").is_file():
-        die(f"no kernel image for {kver}")
+        fail(f"no kernel image for {kver}")
 
-    run("depmod", kver)
+    subprocess.run(["depmod", kver], check=True)
     # The component xattrs an earlier finalize left on the rootfs must not end
     # up in the initramfs.
-    run(
-        "dracut",
-        "--force",
-        "--no-hostonly",
-        "--reproducible",
-        "--zstd",
-        "--verbose",
-        "--kver",
-        kver,
-        str(moddir / "initramfs.img"),
+    subprocess.run(
+        [
+            "dracut",
+            "--force",
+            "--no-hostonly",
+            "--reproducible",
+            "--zstd",
+            "--verbose",
+            "--kver",
+            kver,
+            str(moddir / "initramfs.img"),
+        ],
+        check=True,
         env=os.environ | {"DRACUT_NO_XATTR": "1"},
     )
     (moddir / "initramfs.img").chmod(0o600)
@@ -197,7 +187,12 @@ def source_packages(admindir: Path) -> dict[str, str]:
     Returns:
         Binary package name to source package name.
     """
-    listing = capture("dpkg-query", f"--admindir={admindir}", "-f", QUERY_FORMAT, "-W")
+    listing = subprocess.run(
+        ["dpkg-query", f"--admindir={admindir}", "-f", QUERY_FORMAT, "-W"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
     packages = {}
     for line in listing.splitlines():
         binary, source, status = line.split("\t")
@@ -336,7 +331,7 @@ def label_components(admindir: Path) -> None:
     components = wholly_owned_dirs(owners)
     files, symlinks, hardlinks, unshared = apply_labels(owners, components)
     if not components and not files:
-        die(f"nothing to label under {admindir}")
+        fail(f"nothing to label under {admindir}")
 
     # The kernel image and initramfs are generated, not shipped by a package.
     # Pack them with the kernel's modules.
@@ -451,6 +446,8 @@ def patch_stock_tmpfiles() -> None:
     provision = STOCK_TMPFILES / "provision.conf"
     if provision.is_file():
         patched = provision.read_text().replace(" /root", " /var/roothome")
+        # bootc-ubuntu-base-dirs.conf declares /var/roothome already, and
+        # systemd warns about the duplicate on every boot.
         kept = [
             line
             for line in patched.splitlines()
@@ -468,7 +465,23 @@ def relocate_font_cache() -> None:
     if shutil.which("fc-cache") is None:  # absent outside desktop images
         return
     step("building the font cache")
-    run("fc-cache", "--system-only", "--force")
+    subprocess.run(["fc-cache", "--system-only", "--force"], check=True)
+
+
+# systemd splits the line on whitespace and unquotes it, then expands "%"
+# specifiers in what is left, so both have to be written escaped.
+TMPFILES_ESCAPES = {ord(char): f"\\x{ord(char):02x}" for char in " \t\n\v\f\r\\'\""} | {
+    ord("%"): "%%"
+}
+
+
+def tmpfiles_path(directory: Path) -> str:
+    """Escape a path for the path field of a tmpfiles.d line.
+
+    Returns:
+        The path, as it appears in a tmpfiles.d file.
+    """
+    return str(directory).translate(TMPFILES_ESCAPES)
 
 
 def declared_paths() -> set[str]:
@@ -492,13 +505,13 @@ def declared_paths() -> set[str]:
     return declared
 
 
-def var_entry(directory: Path, mode: int, user: str, group: str) -> str:
+def var_entry(path: str, mode: int, user: str, group: str) -> str:
     """Format one tmpfiles.d directory entry.
 
     Returns:
         The entry, as a tmpfiles.d line.
     """
-    return f"d {directory} {mode:04o} {user} {group} -"
+    return f"d {path} {mode:04o} {user} {group} -"
 
 
 def name_of(uid: int, gid: int) -> tuple[str, str]:
@@ -539,21 +552,19 @@ def write_var_tmpfiles() -> None:
                 entries[fields[1]] = line
 
     for directory, mode, owner in VAR_DIRS:
-        if str(directory) not in declared:
-            entries[str(directory)] = var_entry(
-                directory, mode, owner or "root", "root"
-            )
+        path = tmpfiles_path(directory)
+        if path not in declared:
+            entries[path] = var_entry(path, mode, owner or "root", "root")
 
     for directory in VAR.rglob("*"):
         if directory.is_symlink() or not directory.is_dir():
             continue
-        if str(directory) in declared:
+        path = tmpfiles_path(directory)
+        if path in declared:
             continue
         info = directory.lstat()
         user, group = name_of(info.st_uid, info.st_gid)
-        entries[str(directory)] = var_entry(
-            directory, stat.S_IMODE(info.st_mode), user, group
-        )
+        entries[path] = var_entry(path, stat.S_IMODE(info.st_mode), user, group)
 
     header = (
         "# Directories the image ships in /var, which starts empty on an\n"
@@ -572,8 +583,8 @@ def empty_var() -> None:
     clean.
 
     Raises:
-        OSError: If a path under /run or /tmp cannot be removed for a reason
-            other than being a mount podman put there.
+        OSError: If a path cannot be removed, other than a mount podman put
+            under /run or /tmp.
     """
     step("emptying /var, /run and /tmp")
     for directory in (Path("/run"), Path("/tmp")):
@@ -589,12 +600,11 @@ def empty_var() -> None:
                 if error.errno != errno.EBUSY:
                     raise
 
-    var = Path("/var")
-    for entry in sorted(var.rglob("*"), reverse=True):
-        if entry.is_symlink() or entry.is_file():
-            entry.unlink()
-        elif entry.is_dir() and not any(entry.iterdir()):
+    for entry in sorted(VAR.rglob("*"), reverse=True):
+        if entry.is_dir() and not entry.is_symlink():
             entry.rmdir()
+        else:
+            entry.unlink()
 
     for directory, mode, owner in VAR_DIRS:
         directory.mkdir(parents=True)
@@ -623,7 +633,7 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
 def cmd_lint(args: argparse.Namespace) -> None:
     """Run bootc container lint with warnings fatal."""
     step("linting")
-    run("bootc", "container", "lint", "--fatal-warnings")
+    subprocess.run(["bootc", "container", "lint", "--fatal-warnings"], check=True)
 
 
 def cmd_finalize(args: argparse.Namespace) -> None:
@@ -651,10 +661,10 @@ def cmd_rechunk(args: argparse.Namespace) -> None:
     CHUNKAH_CONFIG_STR or it is lost.
     """
     if not (CHUNKAH_ROOTFS / "usr").is_dir():
-        die(f"no rootfs mounted at {CHUNKAH_ROOTFS}")
+        fail(f"no rootfs mounted at {CHUNKAH_ROOTFS}")
     if "CHUNKAH_CONFIG_STR" not in os.environ:
         if args.tag:
-            die("CHUNKAH_CONFIG_STR unset, the image would lose its labels")
+            fail("CHUNKAH_CONFIG_STR unset, the image would lose its labels")
         step("CHUNKAH_CONFIG_STR unset, the image loses its labels")
     command = [
         "chunkah",
@@ -734,12 +744,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the requested subcommand."""
     if os.geteuid() != 0:
-        die("must run as root")
+        fail("must run as root")
     args = parse_args()
     try:
         args.func(args)
     except subprocess.CalledProcessError as error:
-        die(f"{error.cmd[0]} failed with exit status {error.returncode}")
+        fail(f"{error.cmd[0]} failed with exit status {error.returncode}")
 
 
 if __name__ == "__main__":
