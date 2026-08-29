@@ -1,6 +1,6 @@
 [Unit]
 Description=Initialize the system-wide flatpak repository
-ConditionPathExists=!/var/lib/flatpak/repo
+ConditionPathExists=!/var/lib/flatpak/repo/config
 Before=flatpak-system-helper.service
 
 [Service]

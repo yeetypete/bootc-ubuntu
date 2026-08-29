@@ -73,6 +73,10 @@ VAR_DIRS = {
     Path("/var/log/apt"): 0o755,
 }
 
+# Directories a program initializes itself and should not be
+# created automatically with tmpfiles entries.
+VAR_SELF_INITIALIZED = (Path("/var/lib/flatpak/repo"),)
+
 VAR = Path("/var")
 
 # Where `podman run --mount=type=image` presents the rootfs to rechunk.
@@ -533,6 +537,11 @@ def write_var_tmpfiles() -> None:
     for link, target in IMAGE_STATE.items():
         path = tmpfiles_path(link)
         entries[path] = f"L+ {path} - - - - {tmpfiles_path(target)}"
+
+    for excluded in map(tmpfiles_path, VAR_SELF_INITIALIZED):
+        prefix = f"{excluded}/"
+        for path in [p for p in entries if p == excluded or p.startswith(prefix)]:
+            del entries[path]
 
     header = (
         "# What the image ships in /var, which starts empty on an installed\n"
