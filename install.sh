@@ -5,16 +5,14 @@
 #     curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
 #         | sudo bash -s -- /dev/nvme0n1
 #
-# Arguments after the disk go to bootc-ubuntu-install, which installs it.
+# Options go to bootc-ubuntu-install, which does the install.
 set -euo pipefail
 
 # The image to install, and the registry reference the installed system
 # fetches updates from.
 IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu-desktop:26.04}"
-# Where bootc installs from, in containers-transports(5) form.
-SOURCE="${SOURCE:-containers-storage:${IMAGE}}"
 usage() {
-    echo "Usage: install.sh [--image REF] [--source REF] DISK [ARG...]" >&2
+    echo "Usage: install.sh DISK [IMAGE [SOURCE]] [ARG...]" >&2
 }
 
 fatal() {
@@ -22,34 +20,23 @@ fatal() {
     exit 1
 }
 
-install_args=()
-disk=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --image)
-        IMAGE="$2"
-        shift 2
-        ;;
-    --source)
-        SOURCE="$2"
-        shift 2
-        ;;
-    -h | --help)
-        usage
-        exit 0
-        ;;
-    -*)
-        usage
-        exit 2
-        ;;
-    *)
-        disk="$1"
-        shift
-        install_args=("$@")
-        break
-        ;;
-    esac
+if [[ "${1-}" == "-h" || "${1-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+args=()
+while [[ $# -gt 0 && "$1" != -* ]]; do
+    args+=("$1")
+    shift
 done
+install_args=("$@")
+
+disk="${args[0]-}"
+IMAGE="${args[1]-${IMAGE}}"
+# Where bootc installs from, in containers-transports(5) form, defaulting to
+# the image in the host's container storage.
+SOURCE="${args[2]-${SOURCE:-containers-storage:${IMAGE}}}"
 
 [[ ${EUID} -eq 0 ]] || fatal "must run as root."
 if [[ -z "${disk}" ]]; then
