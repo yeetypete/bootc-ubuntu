@@ -6,7 +6,7 @@ host:
 
     podman run --rm -it --privileged --pid=host --ipc=host \
       -v /dev:/dev -v /run/udev:/run/udev:ro \
-      IMAGE /usr/libexec/bootc-ubuntu-install /dev/nvme0n1 IMGREF
+      IMAGE /usr/libexec/bootc-ubuntu-install /dev/nvme0n1
 """
 
 import argparse
@@ -111,7 +111,7 @@ class Args(argparse.Namespace):
     """The parsed command line, typed."""
 
     device: Path
-    source_imgref: str
+    source_imgref: str | None
     target_imgref: str | None
     encrypt: Encrypt
 
@@ -128,15 +128,15 @@ def parse_args() -> Args:
     )
     parser.add_argument("device", type=Path, help="Disk to install to.")
     parser.add_argument(
-        "source_imgref",
+        "--source-imgref",
         help="Image to install, in containers-transports(5) form, such as "
-        "docker://docker.io/example/bootc-ubuntu:26.04.",
+        "docker://docker.io/example/bootc-ubuntu:26.04. Defaults to the image "
+        "this is running from.",
     )
     parser.add_argument(
-        "target_imgref",
-        nargs="?",
+        "--target-imgref",
         help="Registry reference the installed system fetches updates from, such "
-        "as docker.io/example/bootc-ubuntu:26.04.",
+        "as docker.io/example/bootc-ubuntu:26.04. Defaults to the source.",
     )
     parser.add_argument(
         "--encrypt",
@@ -151,7 +151,7 @@ def parse_args() -> Args:
 
 def install(
     device: Path,
-    source_imgref: str,
+    source_imgref: str | None,
     target_imgref: str | None,
     encrypt: Encrypt,
     keyfile: Path | None,
@@ -188,24 +188,26 @@ def install(
         filesystem = Path("/dev/mapper") / MAPPING
     subprocess.run(["mount", filesystem, target], check=True)
 
+    # Left to bootc when not given, which reads the image this is running from.
     extra: list[str] = []
+    if source_imgref:
+        extra.append(f"--source-imgref={source_imgref}")
     if target_imgref:
         extra.append(f"--target-imgref={target_imgref}")
-    elif not source_imgref.startswith(("docker://", "registry:")):
+    elif source_imgref and not source_imgref.startswith(("docker://", "registry:")):
         print(
             "Warning: no target_imgref and source_imgref is not a registry "
             "reference, so the installed system will have no usable update source.",
             file=sys.stderr,
         )
 
-    print(f"Installing {source_imgref}")
+    print(f"Installing {source_imgref or 'this image'}")
     subprocess.run(
         [
             "bootc",
             "install",
             "to-filesystem",
             "--composefs-backend",
-            f"--source-imgref={source_imgref}",
             *extra,
             target,
         ],

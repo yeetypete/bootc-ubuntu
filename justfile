@@ -200,10 +200,11 @@ disk *args: oci
     # Point podman at the host's image store, which bcvk mounts read-only.
     install="CONTAINERS_STORAGE_CONF=/run/virtiofs-mnt-repo/vm/storage.conf \
     bash /run/virtiofs-mnt-repo/install.sh \
-    /dev/disk/by-id/virtio-target \
-    {{ variant_imgref }} \
-    oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
-    {{ args }}"
+    --image {{ variant_imgref }} \
+    --volume /run/virtiofs-mnt-repo/{{ oci_dir }} \
+    --source-imgref oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
+    --target-imgref {{ variant_imgref }} \
+    /dev/disk/by-id/virtio-target {{ args }}"
     # The repo is bound at /run/virtiofs-mnt-repo, the disk attached as "target".
     bcvk ephemeral run-ssh --rm \
         --mount-disk-file "$PWD/{{ disk_img }}:target" \

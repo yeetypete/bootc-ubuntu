@@ -47,7 +47,7 @@ curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
 ```
 
 The script asks for confirmation and a LUKS passphrase before it writes
-anything. Options go to
+anything. Arguments go to
 [`bootc-ubuntu-install`](system_files/base/usr/libexec/bootc-ubuntu-install),
 where `--encrypt off` leaves the root unencrypted. Reboot into the installed
 system when it finishes.
@@ -104,7 +104,7 @@ an installed system to it with `bootc switch`:
 
 ```bash
 curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
-    | sudo bash -s -- /dev/nvme0n1 REGISTRY/IMAGE:TAG
+    | sudo bash -s -- --image REGISTRY/IMAGE:TAG /dev/nvme0n1
 ```
 
 The [`desktop` stage](Containerfile#L178) of the `Containerfile` is itself a

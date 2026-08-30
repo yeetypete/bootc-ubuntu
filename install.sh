@@ -4,15 +4,14 @@
 #
 #     curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
 #         | sudo bash -s -- /dev/nvme0n1
-#
-# Options go to bootc-ubuntu-install, which does the install.
 set -euo pipefail
 
-# The image to install, and the registry reference the installed system
-# fetches updates from.
 IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu-desktop:26.04}"
+INSTALLER=/usr/libexec/bootc-ubuntu-install
+
 usage() {
-    echo "Usage: install.sh DISK [IMAGE [SOURCE]] [ARG...]" >&2
+    echo "Usage: install.sh [--image REF] [--volume DIR] ARG..." >&2
+    echo "Arguments go to ${INSTALLER} in the image, which takes the disk." >&2
 }
 
 fatal() {
@@ -20,32 +19,37 @@ fatal() {
     exit 1
 }
 
-if [[ "${1-}" == "-h" || "${1-}" == "--help" ]]; then
-    usage
-    exit 0
-fi
-
 args=()
-while [[ $# -gt 0 && "$1" != -* ]]; do
-    args+=("$1")
-    shift
+volumes=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --image)
+        IMAGE="$2"
+        shift 2
+        ;;
+    --volume)
+        dir="$(realpath "$2")"
+        volumes+=(-v "${dir}:${dir}:ro")
+        shift 2
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        args+=("$1")
+        shift
+        ;;
+    esac
 done
-install_args=("$@")
-
-disk="${args[0]-}"
-IMAGE="${args[1]-${IMAGE}}"
-# Where bootc installs from, in containers-transports(5) form, defaulting to
-# the image in the host's container storage.
-SOURCE="${args[2]-${SOURCE:-containers-storage:${IMAGE}}}"
 
 [[ ${EUID} -eq 0 ]] || fatal "must run as root."
-if [[ -z "${disk}" ]]; then
+if [[ ${#args[@]} -eq 0 ]]; then
     usage
     echo >&2
     lsblk --nodeps --output NAME,SIZE,MODEL >&2
     exit 2
 fi
-[[ -b "${disk}" ]] || fatal "${disk} is not a block device."
 
 # Piped from curl, stdin is the script itself. Reattach the terminal for the
 # installer's prompts.
@@ -59,22 +63,9 @@ if ! command -v podman >/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates podman
 fi
 
-# An oci: source is a path, resolved inside the container, so absolutize it
-# and mount it at the same place.
-volumes=()
-if [[ "${SOURCE}" == oci:* ]]; then
-    rest="${SOURCE#oci:}"
-    tag=""
-    [[ "${rest}" == *:* ]] && tag=":${rest#*:}"
-    dir="$(realpath "${rest%%:*}")"
-    SOURCE="oci:${dir}${tag}"
-    volumes=(-v "${dir}:${dir}:ro")
-fi
-
-# The containers-storage source reads the host's image storage, mounted in.
+# The installer reads the host's image storage, mounted in.
 exec podman run --rm -it --privileged --pid=host --ipc=host \
     -v /dev:/dev -v /run/udev:/run/udev:ro \
     -v /var/lib/containers:/var/lib/containers \
     "${volumes[@]}" \
-    "${IMAGE}" /usr/libexec/bootc-ubuntu-install \
-    "${install_args[@]}" "${disk}" "${SOURCE}" "${IMAGE}"
+    "${IMAGE}" "${INSTALLER}" "${args[@]}"
