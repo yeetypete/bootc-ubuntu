@@ -2,7 +2,8 @@
 
 Ubuntu 26.04 as a [bootc](https://bootc-dev.github.io/bootc/) image. The image
 provides a full system, built and shipped as a container image, updated
-transactionally, with a read-only root filesystem on an encrypted disk.
+transactionally, with a read-only root filesystem on an optionally encrypted
+disk.
 
 `bootc-ubuntu` provides:
 
@@ -46,7 +47,10 @@ curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
 ```
 
 The script asks for confirmation and a LUKS passphrase before it writes
-anything. Reboot into the installed system when it finishes.
+anything. Options go to
+[`bootc-ubuntu-install`](system_files/base/usr/libexec/bootc-ubuntu-install),
+where `--encrypt off` leaves the root unencrypted. Reboot into the installed
+system when it finishes.
 
 To unlock with the TPM instead of a passphrase, enroll one afterwards with
 [`systemd-cryptenroll`](https://www.freedesktop.org/software/systemd/man/latest/systemd-cryptenroll.html).
@@ -66,6 +70,9 @@ just vm ubuntu         # Throwaway VM from the image, discarded on exit.
 just disk              # Install it to bootc-ubuntu.img, in a VM, offline.
 just boot ubuntu       # Boot bootc-ubuntu.img, with the console on this terminal.
 ```
+
+`just disk` encrypts the root and prompts for a passphrase, and
+`just disk --encrypt off` skips both.
 
 The recipes above run the VMs headless. Set `display` to open a window instead:
 
@@ -97,7 +104,7 @@ an installed system to it with `bootc switch`:
 
 ```bash
 curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
-    | sudo bash -s -- --image REGISTRY/IMAGE:TAG /dev/nvme0n1
+    | sudo bash -s -- /dev/nvme0n1 REGISTRY/IMAGE:TAG
 ```
 
 The [`desktop` stage](Containerfile#L178) of the `Containerfile` is itself a
