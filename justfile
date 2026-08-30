@@ -186,11 +186,12 @@ vm user="":
     fi
     bcvk ephemeral run-ssh "${kargs[@]}" {{ variant_imgref }}
 
-# Install the image to an encrypted raw disk image that can be booted or written
-# to a device. Prompts for a passphrase. The install runs in a VM.
-[doc('Install the image to an encrypted raw disk image.')]
+# Install the image to a raw disk image that can be booted or written to a
+# device. The install runs in a VM, and `args` goes to the installer, as in
+# `just disk --encrypt off`.
+[doc('Install the image to a raw disk image, encrypted by default.')]
 [group('disk')]
-disk: oci
+disk *args: oci
     #!/usr/bin/env bash
     set -euo pipefail
     # bcvk creates the image when it is missing, so removing it clears the
@@ -201,7 +202,7 @@ disk: oci
     bash /run/virtiofs-mnt-repo/install.sh \
     --image {{ variant_imgref }} \
     --source oci:/run/virtiofs-mnt-repo/{{ oci_dir }}:{{ build_tag }} \
-    /dev/disk/by-id/virtio-target"
+    /dev/disk/by-id/virtio-target {{ args }}"
     # The repo is bound at /run/virtiofs-mnt-repo, the disk attached as "target".
     bcvk ephemeral run-ssh --rm \
         --mount-disk-file "$PWD/{{ disk_img }}:target" \
