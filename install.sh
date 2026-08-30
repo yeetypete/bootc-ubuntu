@@ -6,13 +6,12 @@
 #         | sudo bash -s -- /dev/nvme0n1
 set -euo pipefail
 
-# The image to install, and the registry reference the installed system
-# fetches updates from.
 IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu-desktop:26.04}"
-# Where bootc installs from, in containers-transports(5) form.
-SOURCE="${SOURCE:-containers-storage:${IMAGE}}"
+INSTALLER=/usr/libexec/bootc-ubuntu-install
+
 usage() {
-    echo "Usage: install.sh [--image REF] [--source REF] DISK" >&2
+    echo "Usage: install.sh [--image REF] [--volume DIR] ARG..." >&2
+    echo "Arguments go to ${INSTALLER} in the image, which takes the disk." >&2
 }
 
 fatal() {
@@ -20,40 +19,37 @@ fatal() {
     exit 1
 }
 
-disk=""
+args=()
+volumes=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
     --image)
         IMAGE="$2"
         shift 2
         ;;
-    --source)
-        SOURCE="$2"
+    --volume)
+        dir="$(realpath "$2")"
+        volumes+=(-v "${dir}:${dir}:ro")
         shift 2
         ;;
     -h | --help)
         usage
         exit 0
         ;;
-    -*)
-        usage
-        exit 2
-        ;;
     *)
-        disk="$1"
+        args+=("$1")
         shift
         ;;
     esac
 done
 
 [[ ${EUID} -eq 0 ]] || fatal "must run as root."
-if [[ -z "${disk}" ]]; then
+if [[ ${#args[@]} -eq 0 ]]; then
     usage
     echo >&2
     lsblk --nodeps --output NAME,SIZE,MODEL >&2
     exit 2
 fi
-[[ -b "${disk}" ]] || fatal "${disk} is not a block device."
 
 # Piped from curl, stdin is the script itself. Reattach the terminal for the
 # installer's prompts.
@@ -67,21 +63,9 @@ if ! command -v podman >/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates podman
 fi
 
-# An oci: source is a path, resolved inside the container, so absolutize it
-# and mount it at the same place.
-volumes=()
-if [[ "${SOURCE}" == oci:* ]]; then
-    rest="${SOURCE#oci:}"
-    tag=""
-    [[ "${rest}" == *:* ]] && tag=":${rest#*:}"
-    dir="$(realpath "${rest%%:*}")"
-    SOURCE="oci:${dir}${tag}"
-    volumes=(-v "${dir}:${dir}:ro")
-fi
-
-# The containers-storage source reads the host's image storage, mounted in.
+# The installer reads the host's image storage, mounted in.
 exec podman run --rm -it --privileged --pid=host --ipc=host \
     -v /dev:/dev -v /run/udev:/run/udev:ro \
     -v /var/lib/containers:/var/lib/containers \
     "${volumes[@]}" \
-    "${IMAGE}" /usr/libexec/bootc-ubuntu-install "${disk}" "${SOURCE}" "${IMAGE}"
+    "${IMAGE}" "${INSTALLER}" "${args[@]}"
