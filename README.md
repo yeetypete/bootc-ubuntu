@@ -71,8 +71,8 @@ just disk              # Install it to bootc-ubuntu.img, in a VM, offline.
 just boot ubuntu       # Boot bootc-ubuntu.img, with the console on this terminal.
 ```
 
-`just disk` encrypts the root and prompts for a passphrase, and
-`just disk --encrypt off` skips both.
+`just disk` encrypts the root and prompts for a passphrase.
+`just disk --encrypt off` installs unencrypted.
 
 The recipes above run the VMs headless. Set `display` to open a window instead:
 

@@ -187,8 +187,7 @@ vm user="":
     bcvk ephemeral run-ssh "${kargs[@]}" {{ variant_imgref }}
 
 # Install the image to a raw disk image that can be booted or written to a
-# device. The install runs in a VM, and `args` goes to the installer, as in
-# `just disk --encrypt off`.
+# device. The install runs in a VM, and `args` goes to the installer.
 [doc('Install the image to a raw disk image, encrypted by default.')]
 [group('disk')]
 disk *args: oci
