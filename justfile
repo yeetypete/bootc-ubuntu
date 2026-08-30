@@ -1,7 +1,5 @@
 # bootc-ubuntu developer tasks.
 
-set default-list := true
-
 # Version for image labels and the tag suffix, without its leading "v".
 version := "0.0.0"
 # Git commit SHA for image labels.
@@ -66,6 +64,9 @@ variant_build := if variant == "base" { "build-base" } else { "build" }
 # set display=gtk for a window, the only way to see the desktop.
 display := "none"
 graphics := if display == "none" { "-nographic" } else { "-vga none -device virtio-vga-gl -display " + display + ",gl=on -serial mon:stdio" }
+
+default:
+    @just --list
 
 # Repack `src` into content-based layers, tagged `dst`.
 [private]
