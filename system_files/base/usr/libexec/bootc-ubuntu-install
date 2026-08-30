@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-r"""Install this image onto a disk, with a LUKS2-encrypted root.
+r"""Install this image onto a disk, with an optionally LUKS2-encrypted root.
 
-Partitions the disk according to /usr/lib/bootc-ubuntu/repart.d, encrypts the
-root with a passphrase, and installs the image into it. Run this from the bootc
-image as a container, against a disk on the host:
+Run this from the bootc image as a container, against a disk on the
+host:
 
     podman run --rm -it --privileged --pid=host --ipc=host \
       -v /dev:/dev -v /run/udev:/run/udev:ro \
@@ -13,9 +12,11 @@ image as a container, against a disk on the host:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+from enum import StrEnum
 from getpass import getpass
 from pathlib import Path
 
@@ -24,7 +25,17 @@ ESP_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 ROOT_TYPE = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 
 DEFINITIONS = Path("/usr/lib/bootc-ubuntu/repart.d")
+ROOT_DEFINITION = "20-root.conf"
 MAPPING = "bootc-ubuntu-root"
+
+
+class Encrypt(StrEnum):
+    """How the root is encrypted, as systemd-repart Encrypt= values."""
+
+    # TODO: add key-file+tpm2, which repart enrolls against the installer
+    # machine's TPM and no PCRs.
+    OFF = "off"
+    KEY_FILE = "key-file"
 
 
 def partition_of_type(device: Path, type_guid: str) -> Path:
@@ -58,6 +69,22 @@ def wait_for(node: Path, timeout: int = 10) -> Path:
     return node
 
 
+def definitions(tmp: Path, encrypt: Encrypt) -> Path:
+    """Copy the repart definitions, setting how the root is encrypted.
+
+    The shipped definitions carry no Encrypt=, so the mode is appended to a
+    copy of the root definition.
+
+    Returns:
+        The path of the copied definitions directory.
+    """
+    copied = tmp / DEFINITIONS.name
+    shutil.copytree(DEFINITIONS, copied)
+    root = copied / ROOT_DEFINITION
+    root.write_text(f"{root.read_text()}Encrypt={encrypt}\n")
+    return copied
+
+
 def prompt_passphrase() -> str:
     """Ask for the passphrase the encrypted root is unlocked with.
 
@@ -86,6 +113,7 @@ class Args(argparse.Namespace):
     device: Path
     source_imgref: str
     target_imgref: str | None
+    encrypt: Encrypt
 
 
 def parse_args() -> Args:
@@ -110,6 +138,14 @@ def parse_args() -> Args:
         help="Registry reference the installed system fetches updates from, such "
         "as docker.io/example/bootc-ubuntu:26.04.",
     )
+    parser.add_argument(
+        "--encrypt",
+        type=Encrypt,
+        choices=list(Encrypt),
+        default=Encrypt.KEY_FILE,
+        help="How to encrypt the root. key-file asks for a passphrase, off "
+        "leaves the root unencrypted. Default: %(default)s.",
+    )
     return parser.parse_args(namespace=Args())
 
 
@@ -117,18 +153,20 @@ def install(
     device: Path,
     source_imgref: str,
     target_imgref: str | None,
-    keyfile: Path,
+    encrypt: Encrypt,
+    keyfile: Path | None,
+    tmp: Path,
     target: Path,
 ) -> None:
-    """Partition, encrypt and install the image onto the disk."""
+    """Partition the disk, encrypt the root as asked, and install the image."""
     print(f"Partitioning {device}")
     subprocess.run(
         [
             "systemd-repart",
-            f"--definitions={DEFINITIONS}",
+            f"--definitions={definitions(tmp, encrypt)}",
             "--empty=force",
             "--dry-run=no",
-            f"--key-file={keyfile}",
+            *([f"--key-file={keyfile}"] if keyfile else []),
             device,
         ],
         check=True,
@@ -140,12 +178,15 @@ def install(
     esp = wait_for(partition_of_type(device, ESP_TYPE))
     root = wait_for(partition_of_type(device, ROOT_TYPE))
 
-    print(f"Unlocking {root}")
-    subprocess.run(
-        ["cryptsetup", "luksOpen", root, MAPPING, f"--key-file={keyfile}"],
-        check=True,
-    )
-    subprocess.run(["mount", f"/dev/mapper/{MAPPING}", target], check=True)
+    filesystem = root
+    if keyfile:
+        print(f"Unlocking {root}")
+        subprocess.run(
+            ["cryptsetup", "luksOpen", root, MAPPING, f"--key-file={keyfile}"],
+            check=True,
+        )
+        filesystem = Path("/dev/mapper") / MAPPING
+    subprocess.run(["mount", filesystem, target], check=True)
 
     extra: list[str] = []
     if target_imgref:
@@ -171,6 +212,9 @@ def install(
         check=True,
     )
 
+    if not keyfile:
+        print(f"\nInstalled. ESP {esp}, unencrypted root {root}.")
+        return
     print(f"\nInstalled. ESP {esp}, encrypted root {root}.")
     print("Add a TPM2 keyslot once Secure Boot is enabled with:")
     print(f"  systemd-cryptenroll --tpm2-device=auto {root}.")
@@ -186,26 +230,35 @@ def main() -> None:
         sys.exit(f"{args.device} is not a block device.")
 
     confirm(args.device)
-    passphrase = prompt_passphrase()
+    passphrase = prompt_passphrase() if args.encrypt != Encrypt.OFF else None
 
     # Kept out of /tmp, where bootc install mounts a fresh tmpfs when it is not
     # one already, as in a container, and that would shadow the target mount.
     with tempfile.TemporaryDirectory(dir="/run") as tmp:
-        # repart takes the key from a file. Writing the passphrase with no
-        # trailing newline makes the resulting keyslot an ordinary passphrase.
-        keyfile = Path(tmp) / "passphrase"
-        keyfile.write_text(passphrase)
-        keyfile.chmod(0o600)
+        keyfile = None
+        if passphrase is not None:
+            # repart takes the key from a file. Writing the passphrase with no
+            # trailing newline makes the resulting keyslot an ordinary passphrase.
+            keyfile = Path(tmp) / "passphrase"
+            keyfile.write_text(passphrase)
+            keyfile.chmod(0o600)
 
         target = Path(tmp) / "target"
         target.mkdir()
         try:
             install(
-                args.device, args.source_imgref, args.target_imgref, keyfile, target
+                args.device,
+                args.source_imgref,
+                args.target_imgref,
+                args.encrypt,
+                keyfile,
+                Path(tmp),
+                target,
             )
         finally:
             subprocess.run(["umount", "--recursive", target], check=False)
-            subprocess.run(["cryptsetup", "close", MAPPING], check=False)
+            if keyfile:
+                subprocess.run(["cryptsetup", "close", MAPPING], check=False)
 
     print(f"\nBoot {args.device} to start the new system.")
 

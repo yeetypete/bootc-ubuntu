@@ -4,6 +4,8 @@
 #
 #     curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
 #         | sudo bash -s -- /dev/nvme0n1
+#
+# Arguments after the disk go to bootc-ubuntu-install, which installs it.
 set -euo pipefail
 
 # The image to install, and the registry reference the installed system
@@ -12,7 +14,7 @@ IMAGE="${IMAGE:-docker.io/yeetypete/bootc-ubuntu-desktop:26.04}"
 # Where bootc installs from, in containers-transports(5) form.
 SOURCE="${SOURCE:-containers-storage:${IMAGE}}"
 usage() {
-    echo "Usage: install.sh [--image REF] [--source REF] DISK" >&2
+    echo "Usage: install.sh [--image REF] [--source REF] DISK [ARG...]" >&2
 }
 
 fatal() {
@@ -20,6 +22,7 @@ fatal() {
     exit 1
 }
 
+install_args=()
 disk=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,6 +45,8 @@ while [[ $# -gt 0 ]]; do
     *)
         disk="$1"
         shift
+        install_args=("$@")
+        break
         ;;
     esac
 done
@@ -84,4 +89,5 @@ exec podman run --rm -it --privileged --pid=host --ipc=host \
     -v /dev:/dev -v /run/udev:/run/udev:ro \
     -v /var/lib/containers:/var/lib/containers \
     "${volumes[@]}" \
-    "${IMAGE}" /usr/libexec/bootc-ubuntu-install "${disk}" "${SOURCE}" "${IMAGE}"
+    "${IMAGE}" /usr/libexec/bootc-ubuntu-install \
+    "${install_args[@]}" "${disk}" "${SOURCE}" "${IMAGE}"
