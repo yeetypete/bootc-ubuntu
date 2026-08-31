@@ -61,6 +61,84 @@ Once installed, the system updates transactionally with `bootc upgrade`, which
 pulls a newer image and stages it as a new deployment you can roll back to if
 needed. See the [`bootc` upgrade docs](https://bootc-dev.github.io/bootc/upgrades.html).
 
+## Accounts
+
+The image ships no human accounts. One is provisioned at boot from systemd
+credentials, so the same image can serve machines with different logins:
+
+```bash
+sysusers.extra:                 # u NAME 1000 "Real Name" /var/home/NAME /bin/bash
+passwd.hashed-password.NAME:    # the output of `openssl passwd -6`
+```
+
+The desktop image needs neither, since GNOME Initial Setup creates the first
+account on a machine that has none.
+
+The system accounts that packages create are a different problem. `/etc` is
+per-machine state that `bootc` carries across an upgrade with a three-way
+merge, and a file the machine has modified is kept in preference to the
+image's. `/etc/passwd` is modified the moment any account is added, so from
+then on a system account introduced by a later image would never reach that
+machine, and a daemon would fail to start or find its files owned by a UID
+nobody has.
+
+So `bootc-ubuntu-imagectl finalize` declares them at build time, with the UIDs
+and GIDs they were built with, in one of two ways:
+
+- `sysusers`, the default, writes
+  `/usr/lib/sysusers.d/00-bootc-ubuntu-accounts.conf`. The accounts stay in
+  `/etc`, and `systemd-sysusers` puts back at every boot whatever the merge
+  dropped. The prefix matters: systemd takes the first declaration of a name
+  in filename order, which is what lets a pinned ID here win over the dynamic
+  one a package declares.
+- `userdb` additionally moves the users to JSON records in `/usr/lib/userdb`,
+  which `nss-systemd` resolves. They are then image content like any other
+  file, so nothing about `/etc` can lose one or hold it at a stale UID.
+
+```bash
+just accounts=userdb build    # or: podman build --build-arg ACCOUNTS=userdb
+```
+
+Groups stay in `/etc/group` under either mode, declared in `sysusers.d`. The
+`userdb` drop-in backend answers lookups by name and by ID but not membership
+queries, so a group only it knew about would never reach `initgroups(3)`, and a
+daemon started with `User=` would silently lose its supplementary groups.
+
+Two other things to know before choosing `userdb`: a user that is not in
+`/etc/passwd` is invisible to anything reading that file directly instead of
+going through NSS, and the records are not in the initramfs.
+
+Packages that ship a `sysusers.d` of their own are left alone, since Debian's
+[`dh_installsysusers`](https://manpages.debian.org/testing/debhelper/dh_installsysusers.1.en.html)
+is where this belongs in the long run and adopting it upstream shrinks what
+has to be generated here. The exception is an account that owns something the
+image ships: `/usr/bin/ssh-agent` is setgid `_ssh`, and `/etc/polkit-1/rules.d`
+is only readable by `polkitd`. Ownership is recorded numerically, so those IDs
+are pinned even when a package declares them without one.
+
+### Keeping the IDs stable
+
+An account's id is whatever was free when its package was installed, so it
+depends on install order and moves when the package list changes. That only
+matters where something records the number, and the image is scanned for
+exactly that:
+
+- Under `/etc`, `finalize` emits `tmpfiles.d` entries that reassert ownership
+  by name at every boot, so the id may drift harmlessly. Nothing to maintain.
+- Under `/var`, the entries `finalize` already generates name their owner, so
+  the same applies.
+- Under `/usr` there is no fix: it is read-only, and these are setgid binaries
+  where the group is what gates access. `/usr/bin/ssh-agent` is setgid `_ssh`,
+  and `/usr/lib/dbus-1.0/dbus-daemon-launch-helper` is setuid root and setgid
+  `messagebus`. Those ids have to stay put.
+
+So `/usr/lib/bootc-ubuntu/accounts.d/*.passwd` and `*.group` record them, in
+the same format as the files they describe. `bootc-ubuntu-seed-accounts`
+writes the entries before any package is installed, so maintainer scripts find
+the account present and leave its id alone, and `finalize` fails if the built
+image disagrees. A derived image whose packages own something under `/usr`
+fails the build with the lines to add; anything else needs no attention.
+
 ## Testing in a VM
 
 ```bash
@@ -99,6 +177,11 @@ COPY system_files/ /
 RUN /usr/libexec/bootc-ubuntu-imagectl finalize
 ```
 
+`finalize` declares whatever accounts the derived image's own packages
+created, on top of what the base image already declares, so it only has to run
+once at the end. Pass `--build-arg ACCOUNTS=userdb` to match a base image built
+that way.
+
 Build and push it, then install it by pointing `install.sh` at it, or switch
 an installed system to it with `bootc switch`:
 
@@ -107,7 +190,7 @@ curl -fsSL https://github.com/yeetypete/bootc-ubuntu/raw/main/install.sh \
     | sudo bash -s -- --image REGISTRY/IMAGE:TAG /dev/nvme0n1
 ```
 
-The [`desktop` stage](Containerfile#L178) of the `Containerfile` is itself a
+The [`desktop` stage](Containerfile#L186) of the `Containerfile` is itself a
 derived image, and can be used as an example of how to derive your own image.
 
 ## Installing tools transiently

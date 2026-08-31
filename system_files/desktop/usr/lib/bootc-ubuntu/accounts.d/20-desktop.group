@@ -1,0 +1,5 @@
+# The accounts the desktop image adds whose id is recorded in it.
+# See 10-base.group for what this is for.
+crontab:x:987:
+lpadmin:x:105:
+sssd:x:108:

@@ -1,0 +1,14 @@
+# The accounts whose id is recorded in the image, and the ids they must keep.
+#
+# Only accounts that own something need to be here: ownership is stored as a
+# number, so if the id moves between two builds a machine that upgraded
+# between them disagrees with what the image ships. Everything else may be
+# allocated freely, which is also what the Fedora packaging guidelines and
+# NixOS ids.nix say. Package maintainer scripts take whichever id is free, so
+# the build writes these entries before installing anything, and
+# `bootc-ubuntu-imagectl finalize` fails if the built image disagrees.
+#
+# Same format as /etc/group. Add an entry when a package starts shipping a
+# setgid binary or a mode-restricted directory owned by a new account.
+_ssh:x:101:
+messagebus:x:995:

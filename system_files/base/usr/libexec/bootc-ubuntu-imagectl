@@ -11,6 +11,7 @@ import argparse
 import errno
 import functools
 import grp
+import json
 import os
 import pwd
 import shutil
@@ -22,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, NamedTuple, NoReturn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 # --- Image layout ---
 
@@ -94,6 +95,34 @@ def fail(message: str) -> NoReturn:
 def step(message: str) -> None:
     """Report the step about to run."""
     print(f"bootc-ubuntu-imagectl: {message}", file=sys.stderr, flush=True)
+
+
+def dropin_fields(*directories: Path, skip: Path | None = None) -> Iterator[list[str]]:
+    """Split the meaningful lines of the .conf drop-ins in some directories.
+
+    systemd reads a drop-in directory in filename order, which is what decides
+    precedence for both tmpfiles.d and sysusers.d, so the files are walked
+    sorted.
+
+    Args:
+        directories: The drop-in directories to read, in order.
+        skip: A file to leave out, for a caller reading back its own output.
+
+    Yields:
+        The whitespace-separated fields of each line that carries any.
+    """
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for conf in sorted(directory.glob("*.conf")):
+            if conf == skip:
+                continue
+            for line in conf.read_text().splitlines():
+                if line.startswith("#"):
+                    continue
+                fields = line.split()
+                if fields:
+                    yield fields
 
 
 def summary(command: Callable[[Args], None]) -> str:
@@ -467,14 +496,11 @@ def declared_paths() -> set[str]:
         The declared paths.
     """
     declared = set()
-    for directory in (STOCK_TMPFILES, Path("/etc/tmpfiles.d")):
-        for conf in sorted(directory.glob("*.conf")) if directory.is_dir() else ():
-            if conf == VAR_TMPFILES:
-                continue
-            for line in conf.read_text().splitlines():
-                fields = line.split()
-                if len(fields) >= 2 and not line.startswith("#"):
-                    declared.add(fields[1])
+    for fields in dropin_fields(
+        STOCK_TMPFILES, Path("/etc/tmpfiles.d"), skip=VAR_TMPFILES
+    ):
+        if len(fields) >= 2:
+            declared.add(fields[1])
     return declared
 
 
@@ -590,6 +616,637 @@ def empty_var() -> None:
         link.symlink_to(target)
 
 
+# --- Account declarations ---
+
+
+SYSUSERS_D = Path("/usr/lib/sysusers.d")
+# Where the declarations this tool generates go, alongside the ones packages
+# ship. Read back on a later run, so a derived image declares only what it added.
+#
+# systemd takes the first declaration of a name across the directory in
+# filename order, so the prefix is what lets a pinned id here win over the
+# dynamic one a package declares.
+GENERATED_SYSUSERS = SYSUSERS_D / "00-bootc-ubuntu-accounts.conf"
+USERDB = Path("/usr/lib/userdb")
+NSSWITCH = Path("/etc/nsswitch.conf")
+LOGIN_DEFS = Path("/etc/login.defs")
+
+# The ids each build is expected to allocate, as drop-ins a derived image can
+# add to. A build that allocates something else fails rather than shipping the
+# drift, since sysusers never renumbers an account a machine already has.
+REGISTRY_D = Path("/usr/lib/bootc-ubuntu/accounts.d")
+
+# Where an id can end up recorded numerically, so that an account owning
+# something here has to keep the same id on every machine that runs the image.
+OWNED_TREES = (Path("/usr"), Path("/etc"))
+ETC = Path("/etc")
+
+# Where the generated chown-by-name entries go.
+CHOWN_TMPFILES = STOCK_TMPFILES / "bootc-ubuntu-accounts.conf"
+
+PASSWD = Path("/etc/passwd")
+GROUP = Path("/etc/group")
+SHADOW = Path("/etc/shadow")
+
+# How an image declares the accounts its packages created. "sysusers" leaves
+# them in /etc and has systemd-sysusers recreate what is missing at every boot.
+# "userdb" moves the users into /usr as JSON records nss-systemd resolves, out
+# of /etc entirely, so no /etc merge can lose one or leave it at a stale UID.
+#
+# Groups stay in /etc under either mode. The drop-in backend answers lookups by
+# name and by id but not membership queries, so a group only it knows about
+# never reaches initgroups(3), and a daemon started with User= would silently
+# lose its supplementary groups.
+ACCOUNT_MODES = ("sysusers", "userdb")
+
+# base-passwd puts nobody above UID_MIN, so the human account check exempts it.
+NOBODY_UID = 65534
+
+# The floor for human accounts when /etc/login.defs does not name one.
+DEFAULT_UID_MIN = 1000
+
+# sysusers.d line types, in the order they have to be applied: a user's primary
+# group must exist before the user, and both before a membership.
+SYSUSERS_ORDER = {"g": 0, "u": 1, "m": 2}
+
+# systemd unquotes a sysusers.d field, so a quote in a GECOS has to be escaped.
+GECOS_ESCAPES = {ord('"'): '\\"', ord("\\"): "\\\\"}
+
+
+class Account(NamedTuple):
+    """One /etc/passwd entry."""
+
+    name: str
+    uid: int
+    gid: int
+    gecos: str
+    home: str
+    shell: str
+
+
+class Group(NamedTuple):
+    """One /etc/group entry."""
+
+    name: str
+    gid: int
+    members: tuple[str, ...]
+
+
+class Declared(NamedTuple):
+    """What the sysusers.d files and userdb records already account for.
+
+    An id is None where the declaration leaves it to be allocated at boot,
+    which is only safe for an account that owns nothing in the image.
+    """
+
+    users: dict[str, int | None]
+    groups: dict[str, int | None]
+    memberships: set[tuple[str, str]]
+
+
+class Additions(NamedTuple):
+    """The accounts an image added on top of what is already declared."""
+
+    users: list[Account]
+    groups: list[Group]
+    memberships: list[tuple[str, str]]
+
+
+def read_accounts() -> list[Account]:
+    """Read the accounts /etc/passwd lists.
+
+    Returns:
+        Every account, in file order.
+    """
+    accounts = []
+    for line in PASSWD.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, _, uid, gid, gecos, home, shell = line.split(":")
+        accounts.append(Account(name, int(uid), int(gid), gecos, home, shell))
+    return accounts
+
+
+def read_groups() -> list[Group]:
+    """Read the groups /etc/group lists.
+
+    Returns:
+        Every group, in file order.
+    """
+    groups = []
+    for line in GROUP.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, _, gid, members = line.split(":")
+        groups.append(Group(name, int(gid), tuple(filter(None, members.split(",")))))
+    return groups
+
+
+def read_secrets(path: Path) -> dict[str, str]:
+    """Read the password field of a shadow-style file.
+
+    Returns:
+        Each name and the password field recorded for it.
+    """
+    if not path.is_file():
+        return {}
+    entries = {}
+    for line in path.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, secret = line.split(":")[:2]
+        entries[name] = secret
+    return entries
+
+
+def is_locked(secret: str) -> bool:
+    """Report whether a shadow password field holds no usable hash.
+
+    Returns:
+        True when the field is empty or only the characters that lock an account.
+    """
+    return secret.strip("!*") == ""
+
+
+def uid_min() -> int:
+    """Read the lowest UID useradd hands to a human account.
+
+    Returns:
+        UID_MIN from /etc/login.defs, or the compiled-in default.
+    """
+    if LOGIN_DEFS.is_file():
+        for line in LOGIN_DEFS.read_text().splitlines():
+            fields = line.split()
+            if len(fields) == 2 and fields[0] == "UID_MIN":
+                return int(fields[1])
+    return DEFAULT_UID_MIN
+
+
+def sysusers_id(field: str) -> int | None:
+    """Read the id a sysusers.d id field pins.
+
+    Returns:
+        The numeric id, or None where the field defers it to allocation.
+    """
+    value = field.split(":", maxsplit=1)[0]
+    return int(value) if value.isdigit() else None
+
+
+class OwnedPath(NamedTuple):
+    """Something the image ships that records an account in its ownership."""
+
+    path: Path
+    uid: int
+    gid: int
+
+
+def image_owned_paths() -> list[OwnedPath]:
+    """Find everything the image ships that is not owned by root.
+
+    Ownership is stored as a number, so each of these is a place an account's
+    id escapes into the image.
+
+    Returns:
+        Each path and the ids owning it, topmost first.
+    """
+    owned = []
+    stack = [tree for tree in OWNED_TREES if tree.is_dir()]
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if info.st_uid or info.st_gid:
+                    owned.append(OwnedPath(Path(entry.path), info.st_uid, info.st_gid))
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+    return sorted(owned)
+
+
+def unreachable_owner_ids(owned: list[OwnedPath]) -> tuple[set[int], set[int]]:
+    """Collect the ids no boot-time chown can correct.
+
+    A path under /etc gets a tmpfiles.d entry that resolves its owner by name
+    at every boot, so its id may drift harmlessly. /usr is read-only, and
+    package manager territory besides, so an id recorded there has to be
+    pinned. /usr/bin/ssh-agent being setgid _ssh is the sharp case.
+
+    Returns:
+        The UIDs and GIDs recorded where only a stable id will do.
+    """
+    uids = {o.uid for o in owned if o.uid and not o.path.is_relative_to(ETC)}
+    gids = {o.gid for o in owned if o.gid and not o.path.is_relative_to(ETC)}
+    return uids, gids
+
+
+def write_chown_rules(owned: list[OwnedPath]) -> None:
+    """Have tmpfiles.d reassert the ownership of /etc by name at every boot.
+
+    This is what lets those accounts keep floating ids: the number in the
+    image stops mattering, because the machine resolves the name itself.
+
+    The entries are "z" rather than "Z", one per path, so each restates
+    exactly the ownership the image ships. A recursive "Z" on a directory
+    would reach files below it that root owns, /etc/ppp being the case in
+    point, and hand them to the directory's group.
+    """
+    entries = []
+    for owner in owned:
+        if not owner.path.is_relative_to(ETC):
+            continue
+        user, group = name_of(owner.uid, owner.gid)
+        entries.append(f"z {tmpfiles_path(owner.path)} - {user} {group} -")
+
+    header = (
+        "# Ownership under /etc that the image records as a number, reasserted\n"
+        "# by name so the id itself does not have to stay put. Generated by\n"
+        "# bootc-ubuntu-imagectl.\n"
+    )
+    CHOWN_TMPFILES.write_text(header + "\n".join(entries) + "\n")
+    CHOWN_TMPFILES.chmod(0o644)
+    print(f"Reasserting {len(entries)} owned paths under {ETC} by name.")
+
+
+def declared_names() -> Declared:
+    """Collect the accounts something in the image already declares.
+
+    Both the sysusers.d files packages ship and the userdb records an earlier
+    finalize wrote count, so a derived image declares only its own additions.
+
+    Returns:
+        The declared users, groups and memberships, with the ids they pin.
+    """
+    users: dict[str, int | None] = {}
+    groups: dict[str, int | None] = {}
+    memberships: set[tuple[str, str]] = set()
+
+    if USERDB.is_dir():
+        for record in USERDB.glob("*.user"):
+            # The numeric lookup symlinks point at a record already read.
+            if not record.is_symlink():
+                users[record.stem] = json.loads(record.read_text()).get("uid")
+
+    for fields in dropin_fields(SYSUSERS_D):
+        if len(fields) >= 2:
+            kind, name = fields[0].rstrip("!"), fields[1].split(":", maxsplit=1)[0]
+            ident = sysusers_id(fields[2]) if len(fields) > 2 else None
+            if kind == "u":
+                # setdefault, because systemd takes the first declaration of a
+                # name in filename order and ignores the rest.
+                users.setdefault(name, ident)
+                # A u line creates a group of the same name unless its id field
+                # names a different one.
+                if len(fields) < 3 or ":" not in fields[2]:
+                    groups.setdefault(name, ident)
+            elif kind == "g":
+                groups.setdefault(name, ident)
+            elif kind == "m" and len(fields) >= 3:
+                memberships.add((name, fields[2]))
+    return Declared(users, groups, memberships)
+
+
+def accounts_to_declare(owners: tuple[set[int], set[int]]) -> Additions:
+    """Find the accounts this image has to declare the ids of itself.
+
+    That is the ones nothing declares, plus the ones a package declares without
+    pinning an id while the image records that id in a file's ownership.
+
+    Args:
+        owners: The UIDs and GIDs that own something the image ships.
+
+    Returns:
+        The users, groups and memberships this image has to declare itself.
+    """
+    declared = declared_names()
+    owner_uids, owner_gids = owners
+    floor = uid_min()
+
+    users = []
+    for account in sorted(read_accounts()):
+        if account.name in declared.users:
+            pinned = declared.users[account.name]
+            if pinned == account.uid:
+                continue
+            if pinned is not None:
+                fail(
+                    f"{account.name} is declared with uid {pinned} but this "
+                    f"build allocated {account.uid}."
+                )
+            # Declared without an id, which only matters if one was recorded.
+            if account.uid not in owner_uids:
+                continue
+        elif account.uid >= floor and account.uid != NOBODY_UID:
+            fail(
+                f"{account.name} (uid {account.uid}) looks like a human account; "
+                "provision one at boot with a credential instead of shipping it."
+            )
+        users.append(account)
+
+    all_groups = read_groups()
+    groups = []
+    for group in sorted(all_groups):
+        if group.name in declared.groups:
+            pinned = declared.groups[group.name]
+            if pinned == group.gid:
+                continue
+            if pinned is not None:
+                fail(
+                    f"{group.name} is declared with gid {pinned} but this "
+                    f"build allocated {group.gid}."
+                )
+            if group.gid not in owner_gids:
+                continue
+        groups.append(group)
+
+    known = {account.name for account in read_accounts()}
+    memberships = sorted(
+        (member, group.name)
+        for group in all_groups
+        for member in group.members
+        # A member with no account cannot be recreated, and sysusers rejects it.
+        if member in known and (member, group.name) not in declared.memberships
+    )
+    return Additions(users, groups, memberships)
+
+
+# --- The id registry ---
+
+
+def registered_ids() -> dict[tuple[str, str], int]:
+    """Read the ids the registry fragments pin.
+
+    The fragments are passwd and group files, so the registry is literally the
+    thing it describes, the way Ubuntu Core and the Fedora bootc base image
+    both keep theirs.
+
+    Returns:
+        The registered id, keyed by the line type and the name.
+    """
+    registered: dict[tuple[str, str], int] = {}
+    if not REGISTRY_D.is_dir():
+        return registered
+    for kind, suffix in (("u", "*.passwd"), ("g", "*.group")):
+        for fragment in sorted(REGISTRY_D.glob(suffix)):
+            for line in fragment.read_text().splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.split(":")
+                if len(fields) >= 3:
+                    registered[kind, fields[0]] = int(fields[2])
+    return registered
+
+
+def registry_entries(additions: Additions) -> list[tuple[tuple[str, str], str]]:
+    """Render what this build created as the lines the registry would hold.
+
+    Returns:
+        Each registry key and the passwd or group entry describing it.
+    """
+    entries = [
+        (
+            ("u", a.name),
+            f"{a.name}:x:{a.uid}:{a.gid}:{a.gecos}:{a.home}:{a.shell}",
+        )
+        for a in additions.users
+    ]
+    return entries + [(("g", g.name), f"{g.name}:x:{g.gid}:") for g in additions.groups]
+
+
+def check_registry(additions: Additions, owners: tuple[set[int], set[int]]) -> None:
+    """Fail when the built image disagrees with the registered ids.
+
+    Every registered entry is checked, not just the ones this image declares,
+    so the registry is a contract about the whole account database rather than
+    an observation of part of it. An id that moves between two builds leaves a
+    machine that upgraded between them disagreeing with the file ownership the
+    image ships, and sysusers never renumbers an account a machine already has.
+    """
+    registered = registered_ids()
+    built = {("u", a.name): a.uid for a in read_accounts()}
+    built |= {("g", g.name): g.gid for g in read_groups()}
+
+    drifted = []
+    absent = []
+    for key, ident in sorted(registered.items()):
+        kind, name = key
+        if key not in built:
+            absent.append(f"{kind} {name} {ident}")
+        elif built[key] != ident:
+            drifted.append(
+                f"{kind} {name}: registered as {ident}, "
+                f"this build allocated {built[key]}"
+            )
+    # Only an account that owns something needs registering. Reporting the
+    # rest would bury the ones that matter under everything that may drift
+    # harmlessly.
+    owner_uids, owner_gids = owners
+    unregistered = [
+        entry
+        for (kind, name), entry in registry_entries(additions)
+        if (kind, name) not in registered
+        and int(entry.split(":")[2]) in (owner_uids if kind == "u" else owner_gids)
+    ]
+
+    if drifted:
+        listing = "\n  ".join(drifted)
+        fail(
+            f"the ids below moved since they were registered in {REGISTRY_D}:"
+            f"\n  {listing}\nbootc-ubuntu-seed-accounts is what holds them "
+            "still; check it ran before the packages installed. Only change a "
+            "registered id if no released image has shipped the old one."
+        )
+    if absent:
+        listing = "\n  ".join(absent)
+        print(
+            f"Registered in {REGISTRY_D} but not in this image, so a package "
+            f"that created them is gone:\n  {listing}"
+        )
+    if unregistered:
+        listing = "\n  ".join(unregistered)
+        fail(
+            f"the accounts below own something under /usr, which is read-only, "
+            f"so nothing can correct their ownership once an id moves. Add "
+            f"these lines to the passwd and group fragments in {REGISTRY_D}:"
+            f"\n  {listing}"
+        )
+
+
+# --- sysusers.d ---
+
+
+def sysusers_gecos(gecos: str) -> str:
+    """Format a GECOS for the description field of a sysusers.d line.
+
+    Returns:
+        The description, quoted, or "-" when the account has none.
+    """
+    return f'"{gecos.translate(GECOS_ESCAPES)}"' if gecos else "-"
+
+
+def sysusers_lines(additions: Additions, with_users: bool) -> list[str]:
+    """Render the additions as sysusers.d lines.
+
+    Args:
+        additions: The accounts to declare.
+        with_users: Whether to declare the users too, or only the groups and
+            memberships, the users being declared as userdb records instead.
+
+    Returns:
+        One line per group, user and membership.
+    """
+    lines = [f"g {group.name} {group.gid}" for group in additions.groups]
+    if with_users:
+        lines += [
+            f"u {account.name} {account.uid}:{account.gid} "
+            f"{sysusers_gecos(account.gecos)} "
+            f"{account.home or '-'} {account.shell or '-'}"
+            for account in additions.users
+        ]
+    lines += [f"m {user} {group}" for user, group in additions.memberships]
+    return lines
+
+
+def write_sysusers(additions: Additions, with_users: bool) -> None:
+    """Declare the added accounts in sysusers.d, for every boot to recreate.
+
+    What is declared here stays in /etc, where a machine's own edits and an
+    upgrade's three-way merge can reach it. What this buys is that an entry the
+    merge drops comes back at the next boot, with the id the image built it with.
+
+    Args:
+        additions: The accounts to declare.
+        with_users: Whether the users belong here, or in the userdb records.
+    """
+    kept: list[str] = []
+    if GENERATED_SYSUSERS.is_file():
+        # Written by an earlier finalize. declared_names() already skipped
+        # these, so scanning /etc alone would drop them.
+        kept = [
+            line
+            for line in GENERATED_SYSUSERS.read_text().splitlines()
+            if line and not line.startswith("#")
+        ]
+
+    # Sorting on the line type first keeps a group ahead of the user whose
+    # primary group it is, and both ahead of a membership naming them.
+    ordered = sorted(
+        (SYSUSERS_ORDER.get(line.split()[0].rstrip("!"), len(SYSUSERS_ORDER)), line)
+        for line in set(kept + sysusers_lines(additions, with_users))
+    )
+    lines = [line for _, line in ordered]
+    header = (
+        "# The accounts the image's packages created, with the UIDs and GIDs\n"
+        "# they were built with. Generated by bootc-ubuntu-imagectl.\n"
+    )
+    GENERATED_SYSUSERS.parent.mkdir(parents=True, exist_ok=True)
+    GENERATED_SYSUSERS.write_text(header + "\n".join(lines) + "\n")
+    GENERATED_SYSUSERS.chmod(0o644)
+
+
+# --- userdb records ---
+
+
+def require_nss_systemd() -> None:
+    """Fail unless glibc resolves userdb records, which userdb mode needs."""
+    if not any(Path("/usr/lib").glob("*/libnss_systemd.so.2")):
+        fail("userdb accounts need the libnss-systemd package installed.")
+    for line in NSSWITCH.read_text().splitlines():
+        if line.startswith("passwd:") and "systemd" in line.split():
+            return
+    fail(f"userdb accounts need systemd on the passwd line of {NSSWITCH}.")
+
+
+def write_record(path: Path, record: dict[str, object], key: int) -> None:
+    """Write one userdb record, with the symlink that makes it resolve by id.
+
+    nss-systemd looks a record up by name from the file name. Only the symlink
+    makes the reverse lookup work, without which ls prints bare numbers and
+    useradd cannot see the id is taken.
+    """
+    path.write_text(json.dumps(record, indent=4, sort_keys=True) + "\n")
+    path.chmod(0o644)
+    by_id = path.with_name(f"{key}{path.suffix}")
+    by_id.unlink(missing_ok=True)
+    by_id.symlink_to(path.name)
+
+
+def write_userdb(additions: Additions) -> None:
+    """Declare the added users as userdb records under /usr.
+
+    This takes them out of /etc altogether: they become image content, so an
+    upgrade brings them along the way it brings any other file, and a machine
+    cannot end up short an account the image has, or holding one at a UID the
+    image never gave it.
+
+    Memberships are left to sysusers.d, since a record's memberOf is not
+    something the drop-in backend reports.
+    """
+    secrets = read_secrets(SHADOW)
+    for account in additions.users:
+        if not is_locked(secrets.get(account.name, "")):
+            fail(
+                f"{account.name} has a password set, which a userdb record does "
+                "not carry; move it out of /etc/shadow by hand."
+            )
+
+    USERDB.mkdir(parents=True, exist_ok=True)
+    USERDB.chmod(0o755)
+
+    for account in additions.users:
+        record: dict[str, object] = {
+            "userName": account.name,
+            "uid": account.uid,
+            "gid": account.gid,
+            "disposition": "system",
+            "locked": True,
+        }
+        if account.gecos:
+            record["realName"] = account.gecos
+        if account.home:
+            record["homeDirectory"] = account.home
+        if account.shell:
+            record["shell"] = account.shell
+        write_record(USERDB / f"{account.name}.user", record, account.uid)
+
+
+def strip_users(additions: Additions) -> None:
+    """Remove the users now declared under /usr from the /etc database.
+
+    /etc/group is left alone, both because its entries are declared in
+    sysusers.d rather than moved, and because its member lists are what carries
+    a moved user's supplementary groups into initgroups(3).
+    """
+    moved = {account.name for account in additions.users}
+    for path in (PASSWD, SHADOW):
+        if not path.is_file():
+            continue
+        kept = [
+            line
+            for line in path.read_text().splitlines()
+            if not line or line.startswith("#") or line.split(":")[0] not in moved
+        ]
+        # Truncating in place keeps the mode and owner, which /etc/shadow needs.
+        path.write_text("\n".join(kept) + "\n")
+
+
+def declare_accounts(mode: str) -> None:
+    """Declare the accounts the packages created outside of /etc state."""
+    step(f"declaring the accounts the packages created ({mode})")
+    owned = image_owned_paths()
+    write_chown_rules(owned)
+    owners = unreachable_owner_ids(owned)
+    additions = accounts_to_declare(owners)
+    check_registry(additions, owners)
+    if mode == "userdb":
+        require_nss_systemd()
+        write_userdb(additions)
+        strip_users(additions)
+    write_sysusers(additions, with_users=mode != "userdb")
+    print(
+        f"Declared {len(additions.users)} users, {len(additions.groups)} groups "
+        f"and {len(additions.memberships)} memberships."
+    )
+
+
 # --- Subcommands ---
 
 
@@ -602,6 +1259,9 @@ def cmd_cleanup(args: Args) -> None:
     patch_stock_tmpfiles()
     relocate_font_cache()
     write_var_tmpfiles()
+    # After write_var_tmpfiles, which names the owners of the /var directories
+    # it records by reading /etc/passwd, and which userdb mode empties.
+    declare_accounts(args.accounts)
     empty_var()
 
 
@@ -665,6 +1325,7 @@ class Args(argparse.Namespace):
     """The parsed command line, typed."""
 
     func: Callable[[Args], None]
+    accounts: str
     max_layers: int
     source_date_epoch: int
     output: str | None
@@ -683,6 +1344,7 @@ def parse_args() -> Args:
     )
     commands = parser.add_subparsers(required=True, metavar="COMMAND")
 
+    parsers = {}
     for name, func in (
         ("initramfs", cmd_initramfs),
         ("cleanup", cmd_cleanup),
@@ -690,7 +1352,17 @@ def parse_args() -> Args:
         ("finalize", cmd_finalize),
     ):
         sub = commands.add_parser(name, help=summary(func))
-        sub.set_defaults(func=func)
+        sub.set_defaults(func=func, accounts=ACCOUNT_MODES[0])
+        parsers[name] = sub
+
+    for name in ("cleanup", "finalize"):
+        parsers[name].add_argument(
+            "--accounts",
+            choices=ACCOUNT_MODES,
+            default=ACCOUNT_MODES[0],
+            help="where the accounts packages created are declared "
+            "(default: %(default)s)",
+        )
 
     rechunk = commands.add_parser(
         "rechunk",

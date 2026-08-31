@@ -1,0 +1,46 @@
+#!/bin/sh
+# Install the accounts the image registers, before any package is installed.
+#
+# A maintainer script that creates an account takes whichever id is free, so
+# the id depends on what was installed before it and moves when the package
+# list changes. Writing the entries first means adduser and systemd-sysusers
+# both find the account present and leave its id alone.
+#
+# The entries are written rather than created with useradd, because useradd
+# and adduser refuse an account whose id falls outside the range they consider
+# system accounts, and because the registry is then literally the file it
+# describes. This is the same approach Ubuntu Core takes in
+# hooks/000-provide-uids-gids.chroot.
+#
+# Runs before python3 exists, so this is sh and awk only.
+set -eu
+
+registry=/usr/lib/bootc-ubuntu/accounts.d
+[ -d "${registry}" ] || exit 0
+
+# Append the entries naming an account that is not there yet. The shadow files
+# get a matching locked entry: systemd-sysusers fails hard on a passwd entry
+# with no shadow entry, and stops without applying the rest.
+install_entries() {
+    database="$1"
+    secrets="$2"
+    suffix="$3"
+    shift 3
+
+    for fragment in "$@"; do
+        [ -e "${fragment}" ] || continue
+        while IFS= read -r entry; do
+            case "${entry}" in '' | '#'*) continue ;; esac
+            name="${entry%%:*}"
+            if cut -d: -f1 "${database}" | grep -qxF "${name}"; then
+                continue
+            fi
+            printf '%s\n' "${entry}" >>"${database}"
+            printf '%s%s\n' "${name}" "${suffix}" >>"${secrets}"
+        done <"${fragment}"
+    done
+}
+
+# Groups first: an account's primary group has to exist before it does.
+install_entries /etc/group /etc/gshadow ':!::' "${registry}"/*.group
+install_entries /etc/passwd /etc/shadow ':!:20089:0:99999:7:::' "${registry}"/*.passwd

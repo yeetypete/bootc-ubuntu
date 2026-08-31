@@ -3,6 +3,9 @@
 ARG SOURCE_DATE_EPOCH=0
 ARG UBUNTU_IMAGE=docker.io/library/ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
 ARG BASE_IMAGE=base-rootfs
+# Where the accounts the packages create are declared, "sysusers" or "userdb".
+# See `bootc-ubuntu-imagectl cleanup --help`.
+ARG ACCOUNTS=sysusers
 
 # git tracks only the executable bit, so the rest of each mode comes from the
 # umask of whoever checked the tree out.
@@ -92,6 +95,18 @@ COPY --from=system-files /system_files/base/etc/initramfs-tools/ /etc/initramfs-
 # kernel-install defers to bootc instead of generating an initramfs itself.
 COPY --from=system-files /system_files/base/usr/lib/kernel/ /usr/lib/kernel/
 
+# The ids the packages below are expected to allocate, and the accounts
+# themselves, created before anything can allocate one. A maintainer script
+# then finds the account already present and leaves its id alone.
+#
+# Writing the entries covers both allocators: a postinst that runs
+# `systemd-sysusers <file>` reads that file alone, so configuring adduser
+# would not reach it. It needs no package installed first, which is why it can
+# run before anything else.
+COPY --from=system-files /system_files/base/usr/lib/bootc-ubuntu/accounts.d/ /usr/lib/bootc-ubuntu/accounts.d/
+COPY --from=system-files /system_files/base/usr/libexec/bootc-ubuntu-seed-accounts /usr/libexec/
+RUN /usr/libexec/bootc-ubuntu-seed-accounts
+
 # The stock kernel already carries FS_VERITY=y and EROFS_FS=m, which the composefs
 # backend needs at boot.
 #
@@ -113,6 +128,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fdisk \
     firmware-sof-signed \
     less \
+    libnss-systemd \
     linux-image-generic \
     netplan.io \
     network-manager \
@@ -162,6 +178,8 @@ RUN systemctl enable \
 # The base image.
 FROM base AS base-rootfs
 
+ARG ACCOUNTS
+
 COPY --from=system-files /system_files/base/ /
 
 LABEL containers.bootc=1
@@ -172,14 +190,22 @@ CMD ["/sbin/init"]
 RUN --network=none \
     --mount=type=tmpfs,target=/run \
     --mount=type=tmpfs,target=/tmp \
-    /usr/libexec/bootc-ubuntu-imagectl finalize
+    /usr/libexec/bootc-ubuntu-imagectl finalize --accounts "${ACCOUNTS}"
 
 
 # The desktop image, derived from the base image.
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE} AS desktop
 
+# Redeclared because BASE_IMAGE may name a published image rather than the
+# base-rootfs stage, in which case nothing above this line carried it.
+ARG ACCOUNTS
+
 COPY --from=system-files /system_files/desktop/ /
+
+# Create the accounts the desktop packages would otherwise allocate, before
+# installing them. The registry drop-in arrived with the copy above.
+RUN /usr/libexec/bootc-ubuntu-seed-accounts
 
 # NOTE: We install with recommended dependencies to get a more complete desktop experience.
 # hadolint ignore=DL3015
@@ -216,7 +242,7 @@ RUN systemctl enable \
 RUN --network=none \
     --mount=type=tmpfs,target=/run \
     --mount=type=tmpfs,target=/tmp \
-    /usr/libexec/bootc-ubuntu-imagectl finalize
+    /usr/libexec/bootc-ubuntu-imagectl finalize --accounts "${ACCOUNTS}"
 
 
 # Move vmlinuz and initramfs.img out of /usr/lib/modules, so that the image does

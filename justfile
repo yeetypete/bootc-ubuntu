@@ -12,6 +12,8 @@ created := `git log -1 --pretty=%cI 2>/dev/null || echo ""`
 tag := "26.04"
 # Registry repository holding the layer cache, e.g. docker.io/yeetypete/bootc-ubuntu-cache.
 cache_repo := ""
+# Where the accounts the packages create are declared, "sysusers" or "userdb".
+accounts := "sysusers"
 
 # Local OCI layout the image is exported to.
 oci_dir := "image.oci"
@@ -28,6 +30,7 @@ base_imgref := "docker.io/yeetypete/bootc-ubuntu:" + tag
 base_revision_imgref := base_imgref + "-" + short_revision
 base_version_imgref := base_imgref + "-" + version
 push_args := "--compression-format zstd --force-compression"
+account_args := "--build-arg ACCOUNTS=" + accounts
 cache_args := if cache_repo == "" { "" } else { "--cache-from " + cache_repo + " --cache-to " + cache_repo }
 labels := "--label org.opencontainers.image.created=" + created + \
     " --label org.opencontainers.image.version=" + version + \
@@ -91,6 +94,7 @@ chunk src dst *args:
 build-base *args:
     podman build --jobs 0 --target base-rootfs \
         {{ base_labels }} \
+        {{ account_args }} \
         --timestamp 0 \
         {{ cache_args }} \
         --tag {{ base_target }} \
@@ -111,6 +115,7 @@ build-base *args:
 build *args: build-base
     podman build --jobs 0 --target kernel-split \
         --build-arg BASE_IMAGE={{ base_chunked }} \
+        {{ account_args }} \
         --timestamp 0 \
         {{ cache_args }} \
         --tag {{ target }} \
@@ -118,6 +123,7 @@ build *args: build-base
     just chunk {{ target }} {{ chunked }} --prune /kernel
     podman build --jobs 0 --target image \
         --build-arg BASE_IMAGE={{ base_chunked }} \
+        {{ account_args }} \
         --build-context chunked=container-image://{{ chunked }} \
         {{ desktop_labels }} \
         --timestamp 0 \
