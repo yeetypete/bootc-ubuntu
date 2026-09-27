@@ -1,5 +1,10 @@
 # bootc-ubuntu
 
+> [!IMPORTANT]
+> This project is superseded by
+> [bootc-imagectl](https://github.com/yeetypete/bootc-imagectl) and is no
+> longer maintained.
+
 Ubuntu 26.04 as a [bootc](https://bootc-dev.github.io/bootc/) image. The image
 provides a full system, built and shipped as a container image, updated
 transactionally, with a read-only root filesystem on an optionally encrypted
